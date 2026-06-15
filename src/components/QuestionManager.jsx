@@ -134,7 +134,7 @@ export default function QuestionManager({ globalImportState, onStartGlobalImport
     setIsEditing(true);
 
     setFormQuestion(q.question);
-    setFormType(q.type || '二合一题');
+    setFormType(q.question_type || '名词解释');
     setFormSubject(q.subject || '');
     setFormChapter(q.chapter || '');
     
@@ -158,7 +158,7 @@ export default function QuestionManager({ globalImportState, onStartGlobalImport
     setIsEditing(true);
 
     setFormQuestion('');
-    setFormType('二合一题');
+    setFormType('名词解释');
     setFormSubject('地理信息系统');
     setFormChapter('第一章 地理信息系统基础理论');
     setFormClozeAnswer('');
@@ -194,7 +194,7 @@ export default function QuestionManager({ globalImportState, onStartGlobalImport
 
     const payload = {
       question: formQuestion,
-      type: formType,
+      question_type: formType,
       subject: formSubject,
       chapter: formChapter,
       cloze_answer: formClozeAnswer,
@@ -478,7 +478,7 @@ export default function QuestionManager({ globalImportState, onStartGlobalImport
                 onClick={() => handleSelectQuestion(q)}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                  <span>二合一题</span>
+                  <span>{q.question_type || '名词解释'}</span>
                   <span>Box {q.mastery_level || 0}</span>
                 </div>
                 <div className="sidebar-item-title" style={{ fontSize: '0.85rem', fontWeight: '500' }}>
@@ -530,8 +530,9 @@ export default function QuestionManager({ globalImportState, onStartGlobalImport
               {/* Type */}
               <div className="form-group">
                 <label>题型</label>
-                <select className="form-input-text" value={formType} onChange={(e) => setFormType(e.target.value)} disabled>
-                  <option value="二合一题">二合一题</option>
+                <select className="form-input-text" value={formType} onChange={(e) => setFormType(e.target.value)}>
+                  <option value="名词解释">名词解释</option>
+                  <option value="简答题">简答题</option>
                 </select>
               </div>
  

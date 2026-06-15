@@ -6,6 +6,7 @@ export default function AppShell({
   children, 
   activeTab, 
   setActiveTab, 
+  onExitSession,
   theme, 
   toggleTheme, 
   backendAvailable, 
@@ -35,7 +36,7 @@ export default function AppShell({
       <header className={`nav-header ${isImmersive ? 'immersive-header' : ''}`}>
         {isImmersive ? (
           <div className="header-immersive-left">
-            <button className="back-btn" onClick={() => setActiveTab('home')}>
+            <button className="back-btn" onClick={onExitSession || (() => setActiveTab('home'))}>
               <ArrowLeft size={20} />
               <span>退出</span>
             </button>

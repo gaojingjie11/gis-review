@@ -140,6 +140,18 @@ export async function initDb() {
   await query(`CREATE INDEX IF NOT EXISTS idx_review_states_next_review ON review_states(next_review_time);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_answers_history_question ON answers_history(question_id);`);
 
+  // Run migrations to add weakness_summary and question_type columns if not exists
+  try {
+    await query(`ALTER TABLE review_states ADD COLUMN IF NOT EXISTS weakness_summary TEXT`);
+  } catch (err) {
+    console.warn('Migration warning: could not add weakness_summary to review_states:', err.message);
+  }
+  try {
+    await query(`ALTER TABLE questions ADD COLUMN IF NOT EXISTS question_type VARCHAR(50) DEFAULT '名词解释'`);
+  } catch (err) {
+    console.warn('Migration warning: could not add question_type to questions:', err.message);
+  }
+
   // Check if seeding is needed
   const qCount = await query('SELECT COUNT(*) FROM questions');
   if (parseInt(qCount.rows[0].count) === 0) {
@@ -299,19 +311,27 @@ export async function getQuestion(id) {
   };
 }
 
+// Helper to get question type (auxiliary display only)
+export function getQuestionType(q) {
+  if (q && q.question_type) return q.question_type;
+  return '名词解释';
+}
+
 // Create Question
 export async function createQuestion(q) {
   const { 
     question, subject, chapter, 
     cloze_answer, cloze_keywords, 
-    
     full_answer, full_score_points, 
-    difficulty, importance 
+    difficulty, importance,
+    question_type
   } = q;
   
+  const derivedType = getQuestionType({ question_type });
+  
   const qInsert = await query(`
-    INSERT INTO questions (question, subject, chapter, cloze_answer, cloze_keywords, full_answer, full_score_points, difficulty, importance)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    INSERT INTO questions (question, subject, chapter, cloze_answer, cloze_keywords, full_answer, full_score_points, difficulty, importance, question_type)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     RETURNING id
   `, [
     question,
@@ -322,7 +342,8 @@ export async function createQuestion(q) {
     full_answer,
     JSON.stringify(full_score_points || []),
     difficulty || 3,
-    importance || 3
+    importance || 3,
+    derivedType
   ]);
 
   const questionId = qInsert.rows[0].id;
@@ -356,16 +377,18 @@ export async function updateQuestion(id, q) {
   const { 
     question, subject, chapter, 
     cloze_answer, cloze_keywords, 
-    
     full_answer, full_score_points, 
-    difficulty, importance 
+    difficulty, importance,
+    question_type
   } = q;
+  
+  const derivedType = getQuestionType({ question_type });
   
   await query(`
     UPDATE questions
     SET question = $1, subject = $2, chapter = $3, cloze_answer = $4, cloze_keywords = $5,
-        full_answer = $6, full_score_points = $7, difficulty = $8, importance = $9, updated_at = CURRENT_TIMESTAMP
-    WHERE id = $10
+        full_answer = $6, full_score_points = $7, difficulty = $8, importance = $9, question_type = $10, updated_at = CURRENT_TIMESTAMP
+    WHERE id = $11
   `, [
     question,
     subject,
@@ -376,6 +399,7 @@ export async function updateQuestion(id, q) {
     JSON.stringify(full_score_points || []),
     difficulty,
     importance,
+    derivedType,
     id
   ]);
 
@@ -409,6 +433,8 @@ export async function getTodayReviews() {
            rs.review_count,
            rs.error_count,
            rs.last_score,
+           rs.average_score,
+           rs.weakness_summary,
            rs.next_review_time
     FROM questions q
     LEFT JOIN review_states rs ON q.id = rs.question_id
@@ -428,30 +454,67 @@ export async function getTodayReviews() {
   res.rows.forEach(row => {
     const r = {
       ...row,
+      question_type: row.question_type || getQuestionType(row),
       cloze_keywords: typeof row.cloze_keywords === 'string' ? JSON.parse(row.cloze_keywords) : row.cloze_keywords,
       full_score_points: typeof row.full_score_points === 'string' ? JSON.parse(row.full_score_points) : row.full_score_points
     };
 
+    // Calculate priority values safely
     const nextReview = r.next_review_time ? new Date(r.next_review_time) : now;
+    const diffTime = now.getTime() - nextReview.getTime();
+    const overdueDays = diffTime > 0 ? (diffTime / (1000 * 60 * 60 * 24)) : 0;
+    
+    // Safety fallback value mappings
+    const errorCount = parseInt(r.error_count !== null && r.error_count !== undefined ? r.error_count : 0, 10);
+    const importance = parseInt(r.importance !== null && r.importance !== undefined ? r.importance : 3, 10);
+    const difficulty = parseInt(r.difficulty !== null && r.difficulty !== undefined ? r.difficulty : 3, 10);
+    const masteryLevel = parseInt(r.mastery_level !== null && r.mastery_level !== undefined ? r.mastery_level : 0, 10);
+    const lastScore = r.last_score !== null && r.last_score !== undefined ? parseFloat(r.last_score) : null;
+    const avgScore = r.average_score !== null && r.average_score !== undefined ? parseFloat(r.average_score) : 0;
+    const reviewCount = parseInt(r.review_count !== null && r.review_count !== undefined ? r.review_count : 0, 10);
+
+    // priority = min(overdueDays, 14) * 3 + errorCount * 4 + importance * 2 + difficulty * 1.5 - masteryLevel * 2
+    r.priority = Math.min(overdueDays, 14) * 3 + errorCount * 4 + importance * 2 + difficulty * 1.5 - masteryLevel * 2;
+
     const isOverdue = nextReview <= new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
     const isDue = nextReview <= now;
 
     if (r.mastery_level === 0) {
       categories.newQuestions.push(r);
-    } else if (isOverdue) {
-      categories.delayedQuestions.push(r);
-      categories.allReviews.push(r);
-    } else if (isDue) {
-      categories.dueQuestions.push(r);
-      categories.allReviews.push(r);
-    }
+    } else {
+      // 错题回炉 upgraded criteria:
+      // errorCount >= 2 OR lastScore < 5 OR avgScore < 6 OR masteryLevel <= 2
+      const isWeak = r.mastery_level > 0 && (
+        errorCount >= 2 ||
+        (lastScore !== null && lastScore < 5) ||
+        (reviewCount > 0 && avgScore < 6) ||
+        masteryLevel <= 2
+      );
 
-    if (r.mastery_level > 0 && (r.error_count > 2 || (r.last_score !== null && r.last_score < 5))) {
-      categories.errorReinforcement.push(r);
+      if (isWeak) {
+        categories.errorReinforcement.push(r);
+      } else if (isOverdue) {
+        categories.delayedQuestions.push(r);
+        categories.allReviews.push(r);
+      } else if (isDue) {
+        categories.dueQuestions.push(r);
+        categories.allReviews.push(r);
+      }
     }
   });
 
-  categories.errorReinforcement.sort((a, b) => b.error_count - a.error_count);
+  // Sort by priority descending
+  categories.delayedQuestions.sort((a, b) => b.priority - a.priority);
+  categories.dueQuestions.sort((a, b) => b.priority - a.priority);
+  categories.errorReinforcement.sort((a, b) => b.priority - a.priority);
+  categories.allReviews.sort((a, b) => b.priority - a.priority);
+
+  // Sort new questions by created_at descending (newest first) to prioritize today's new uploads
+  categories.newQuestions.sort((a, b) => {
+    const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return dateB - dateA;
+  });
 
   return categories;
 }
@@ -508,9 +571,14 @@ export async function saveGrade(questionId, detailScores, inputs, aiFeedback) {
   const newAvgScore = ((avgScore * (reviewCount - 1)) + totalScore) / reviewCount;
 
   // 3. Upsert review state
+  const missingPoints = aiFeedback?.full_evaluation?.missing_points || [];
+  const weaknessSummary = Array.isArray(missingPoints) 
+    ? JSON.stringify(missingPoints) 
+    : JSON.stringify([]);
+
   await query(`
-    INSERT INTO review_states (question_id, mastery_level, review_count, error_count, last_score, average_score, last_review_time, next_review_time, updated_at)
-    VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, $7, CURRENT_TIMESTAMP)
+    INSERT INTO review_states (question_id, mastery_level, review_count, error_count, last_score, average_score, last_review_time, next_review_time, weakness_summary, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, $7, $8, CURRENT_TIMESTAMP)
     ON CONFLICT (question_id) DO UPDATE SET
       mastery_level = EXCLUDED.mastery_level,
       review_count = EXCLUDED.review_count,
@@ -519,8 +587,9 @@ export async function saveGrade(questionId, detailScores, inputs, aiFeedback) {
       average_score = EXCLUDED.average_score,
       last_review_time = EXCLUDED.last_review_time,
       next_review_time = EXCLUDED.next_review_time,
+      weakness_summary = EXCLUDED.weakness_summary,
       updated_at = CURRENT_TIMESTAMP
-  `, [questionId, newLevel, reviewCount, errorCount, totalScore, newAvgScore, nextReviewTime]);
+  `, [questionId, newLevel, reviewCount, errorCount, totalScore, newAvgScore, nextReviewTime, weaknessSummary]);
 }
 
 // Log card rating (忘记, 困难, 基本会, 熟练) and update schedule
@@ -604,13 +673,6 @@ export async function getStatistics() {
     WHERE created_at >= $1
   `, [startOfDay]);
 
-  // Remaining due review count for today
-  const remainingDue = await query(`
-    SELECT COUNT(*) 
-    FROM review_states 
-    WHERE next_review_time <= CURRENT_TIMESTAMP
-  `);
-
   // Average score (from total_score field)
   const avgScore = await query('SELECT AVG(total_score) as avg FROM answers_history WHERE total_score >= 0');
 
@@ -628,13 +690,47 @@ export async function getStatistics() {
     LIMIT 5
   `);
 
-  // Top 5 hardest questions (with lowest average scores and review_count > 0)
-  const hardestQuestions = await query(`
+  // Today's review queue
+  const todayReviews = await getTodayReviews();
+  const activeReviews = [...todayReviews.delayedQuestions, ...todayReviews.dueQuestions];
+
+  // Calculate highest priority chapter
+  const chapterPriorities = {};
+  activeReviews.forEach(r => {
+    if (!chapterPriorities[r.chapter]) {
+      chapterPriorities[r.chapter] = { total: 0, count: 0 };
+    }
+    chapterPriorities[r.chapter].total += r.priority || 0;
+    chapterPriorities[r.chapter].count += 1;
+  });
+
+  let highestPriorityChapter = '无';
+  let maxAvgPriority = -999;
+  Object.entries(chapterPriorities).forEach(([chap, val]) => {
+    const avg = val.total / val.count;
+    if (avg > maxAvgPriority) {
+      maxAvgPriority = avg;
+      highestPriorityChapter = chap;
+    }
+  });
+
+  // Top 10 hardest questions (ordered by error count desc)
+  const top10HardestRes = await query(`
     SELECT q.id, q.question, rs.error_count, rs.average_score, rs.review_count
     FROM questions q
     JOIN review_states rs ON q.id = rs.question_id
     WHERE rs.review_count > 0
-    ORDER BY rs.average_score ASC, rs.error_count DESC
+    ORDER BY rs.error_count DESC, rs.average_score ASC
+    LIMIT 10
+  `);
+
+  // Upcoming forgotten questions (ordered by next review time asc)
+  const upcomingForgottenRes = await query(`
+    SELECT q.id, q.question, rs.next_review_time, rs.mastery_level
+    FROM questions q
+    JOIN review_states rs ON q.id = rs.question_id
+    WHERE rs.mastery_level > 0
+    ORDER BY rs.next_review_time ASC
     LIMIT 5
   `);
 
@@ -659,6 +755,34 @@ export async function getStatistics() {
     ORDER BY total_count DESC
   `);
 
+  // Parse AI common mistakes from weakness_summary JSON arrays
+  const weaknessRes = await query(`
+    SELECT rs.weakness_summary 
+    FROM review_states rs
+    WHERE rs.weakness_summary IS NOT NULL AND rs.weakness_summary <> ''
+  `);
+  
+  const mistakeCounts = {};
+  weaknessRes.rows.forEach(row => {
+    try {
+      const parsed = JSON.parse(row.weakness_summary);
+      if (Array.isArray(parsed)) {
+        parsed.forEach(item => {
+          if (item) {
+            mistakeCounts[item] = (mistakeCounts[item] || 0) + 1;
+          }
+        });
+      }
+    } catch (e) {
+      // Fallback
+    }
+  });
+
+  const aiCommonMistakes = Object.entries(mistakeCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(entry => ({ point: entry[0], count: entry[1] }));
+
   // Map levels
   const levelCounts = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
   masteryDist.rows.forEach(row => {
@@ -670,14 +794,24 @@ export async function getStatistics() {
     learnedQuestions: parseInt(studiedQ.rows[0].count),
     unlearnedQuestions: parseInt(totalQ.rows[0].count) - parseInt(studiedQ.rows[0].count),
     completedToday: parseInt(completedToday.rows[0].count),
-    remainingReviewsToday: parseInt(remainingDue.rows[0].count),
+    remainingReviewsToday: todayReviews.delayedQuestions.length + todayReviews.dueQuestions.length,
     averageScore: parseFloat(parseFloat(avgScore.rows[0].avg || 0).toFixed(1)),
     totalErrors: parseInt(errorCount.rows[0].count),
     levelDistribution: levelCounts,
     chapterWeaknesses: chapterWeaknesses.rows,
-    hardestQuestions: hardestQuestions.rows,
+    hardestQuestions: top10HardestRes.rows.slice(0, 5), // Keep for legacy compatibility
+    top10Hardest: top10HardestRes.rows,
+    highestPriorityChapter,
+    weakestChapter: chapterWeaknesses.rows.length > 0 ? chapterWeaknesses.rows[0].chapter : '无',
+    upcomingForgotten: upcomingForgottenRes.rows.map(row => ({
+      ...row,
+      next_review_time: row.next_review_time
+    })),
     last7DaysActivity: dailyActivity.rows,
-    chapterProgress: chapterProgress.rows
+    chapterProgress: chapterProgress.rows,
+    aiCommonMistakes,
+    delayedCount: todayReviews.delayedQuestions.length,
+    errorReinforcementCount: todayReviews.errorReinforcement.length
   };
 }
 

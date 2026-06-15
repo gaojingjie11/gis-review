@@ -1,40 +1,33 @@
 import React, { useState, useEffect } from 'react';
 import { BookOpen, RefreshCw, AlertTriangle, HelpCircle, Layers, ClipboardList, CheckCircle2, ChevronRight, X } from 'lucide-react';
 
-export default function HomeScreen({ startSession }) {
-  const [stats, setStats] = useState(null);
-  const [reviews, setReviews] = useState(null);
-  const [loading, setLoading] = useState(true);
+export default function HomeScreen({ reviewsData, startSession }) {
   const [activeMenu, setActiveMenu] = useState(null); // 'learn' | 'review' | null
   const [mode, setMode] = useState('standard'); // 'quick' | 'standard' | 'deep'
 
-  useEffect(() => {
-    fetchHomeData();
-  }, []);
+  const {
+    loading,
+    stats,
+    reviews,
+    totalUnlearned,
+    forgotCount,
+    dueReviewCount,
+    actualDueCount,
+    delayedCount,
+    dueQuestionsCount,
+    newQuestionsCount,
+    cappedLearnQueue,
+    cappedReviewQueue
+  } = reviewsData;
 
   // Set default mode when modal opens
   useEffect(() => {
     if (activeMenu === 'learn') {
       setMode('standard');
     } else if (activeMenu === 'review') {
-      setMode('standard'); // default for reviews, but "错题回炉" option will override or defaults can be changed
+      setMode('standard');
     }
   }, [activeMenu]);
-
-  const fetchHomeData = async () => {
-    try {
-      const [resStats, resReviews] = await Promise.all([
-        fetch('/api/statistics').then(r => r.json()),
-        fetch('/api/today-reviews').then(r => r.json())
-      ]);
-      if (resStats.success) setStats(resStats.data);
-      if (resReviews.success) setReviews(resReviews.data);
-    } catch (err) {
-      console.error('Failed to load home screen data:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   // Calculate countdown to KAO YAN (postgraduate entrance exam) - typical date is Dec 19, 2026 for 2027 exam
   const getExamCountdown = () => {
@@ -54,15 +47,6 @@ export default function HomeScreen({ startSession }) {
     );
   }
 
-  // Derived counts
-  const totalUnlearned = stats ? (stats.totalQuestions - stats.learnedQuestions) : 0;
-  const newQuestionsCount = reviews?.newQuestions?.length || 0;
-  const dueReviewCount = stats?.remainingReviewsToday || 0;
-  const forgotCount = reviews?.errorReinforcement?.length || 0;
-
-  // Today's new target (capped at 20 or remaining new questions)
-  const DAILY_NEW_GOAL = 20;
-  const todayNewTarget = Math.min(DAILY_NEW_GOAL, newQuestionsCount);
   const countdown = getExamCountdown();
 
   const handleSelectOption = (action, queue = null, name = '', sessionMode = 'standard') => {
@@ -112,7 +96,7 @@ export default function HomeScreen({ startSession }) {
             <BookOpen className="home-card-icon text-accent" size={24} />
           </div>
           <div className="home-card-body">
-            <span className="home-card-number">{todayNewTarget}</span>
+            <span className="home-card-number">{cappedLearnQueue.length}</span>
             <span className="home-card-label">今日计划新学数量</span>
           </div>
           <div className="home-card-footer">
@@ -130,11 +114,11 @@ export default function HomeScreen({ startSession }) {
             <RefreshCw className="home-card-icon text-accent" size={24} />
           </div>
           <div className="home-card-body">
-            <span className="home-card-number">{dueReviewCount}</span>
-            <span className="home-card-label">今日到期待复习</span>
+            <span className="home-card-number">{dueReviewCount} / {actualDueCount}</span>
+            <span className="home-card-label">今日计划复习数 / 实际到期总数</span>
           </div>
           <div className="home-card-footer">
-            <span>错题待回炉：{forgotCount}</span>
+            <span>延误: {delayedCount} | 到期: {dueQuestionsCount} | 错题: {forgotCount}</span>
           </div>
         </div>
       </div>
@@ -151,69 +135,71 @@ export default function HomeScreen({ startSession }) {
             </div>
 
             {/* Mode selector Segment Control */}
-            <div className="mode-selector-container" style={{ marginBottom: '1.25rem' }}>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>
-                选择练习模式:
-              </span>
-              <div className="mode-pills" style={{ display: 'flex', background: 'rgba(0,0,0,0.15)', borderRadius: '12px', padding: '2px', border: '1px solid var(--border-color)' }}>
-                {[
-                  { id: 'quick', label: '⚡ 快速复习', desc: '仅测试填空' },
-                  { id: 'standard', label: '🚀 标准复习', desc: '填空+论述，可跳过AI' },
-                  { id: 'deep', label: '🧠 深度自测', desc: '填空+论述+AI智能阅卷' }
-                ].map(m => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => setMode(m.id)}
-                    style={{
-                      flex: 1,
-                      padding: '0.5rem 0.25rem',
-                      borderRadius: '10px',
-                      border: 'none',
-                      background: mode === m.id ? 'var(--accent)' : 'transparent',
-                      color: mode === m.id ? 'var(--bg-dark)' : 'var(--text-secondary)',
-                      fontWeight: '700',
-                      fontSize: '0.75rem',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s'
-                    }}
-                    title={m.desc}
-                  >
-                    {m.label}
-                  </button>
-                ))}
+            {!(activeMenu === 'learn' && mode === 'recite') && (
+              <div className="mode-selector-container" style={{ marginBottom: '1.25rem' }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>
+                  选择练习模式:
+                </span>
+                <div className="mode-pills" style={{ display: 'flex', background: 'rgba(0,0,0,0.15)', borderRadius: '12px', padding: '2px', border: '1px solid var(--border-color)' }}>
+                  {[
+                    { id: 'quick', label: '⚡ 快速复习', desc: '仅测试填空' },
+                    { id: 'standard', label: '🚀 标准复习', desc: '填空+论述，可跳过AI' },
+                    { id: 'deep', label: '🧠 深度自测', desc: '填空+论述+AI智能阅卷' }
+                  ].map(m => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setMode(m.id)}
+                      style={{
+                        flex: 1,
+                        padding: '0.5rem 0.25rem',
+                        borderRadius: '10px',
+                        border: 'none',
+                        background: mode === m.id ? 'var(--accent)' : 'transparent',
+                        color: mode === m.id ? 'var(--bg-dark)' : 'var(--text-secondary)',
+                        fontWeight: '700',
+                        fontSize: '0.75rem',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s'
+                      }}
+                      title={m.desc}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
             
             <div className="modal-options-list">
               {activeMenu === 'learn' ? (
                 <>
                   <button 
                     className="modal-option-item"
-                    disabled={newQuestionsCount === 0}
-                    onClick={() => handleSelectOption('start-queue', reviews.newQuestions.slice(0, todayNewTarget), '今日新学', mode)}
-                    style={newQuestionsCount === 0 ? { opacity: 0.6 } : {}}
+                    disabled={cappedLearnQueue.length === 0}
+                    onClick={() => handleSelectOption('start-queue', cappedLearnQueue, '今日新学', mode)}
+                    style={cappedLearnQueue.length === 0 ? { opacity: 0.6 } : {}}
                   >
                     <div className="option-icon-wrapper success">
                       <Layers size={18} />
                     </div>
                     <div className="option-details">
                       <h4>今日计划新学</h4>
-                      <p>进行今日新学 {todayNewTarget} 个考点（使用已选模式）</p>
+                      <p>进行今日新学 {cappedLearnQueue.length} 个考点（使用已选模式）</p>
                     </div>
                     <ChevronRight size={18} className="option-arrow" />
                   </button>
 
                   <button 
                     className="modal-option-item"
-                    onClick={() => handleSelectOption('recite', null, '', mode)}
+                    onClick={() => handleSelectOption('recite', null, '', 'recite')}
                   >
                     <div className="option-icon-wrapper info">
                       <ClipboardList size={18} />
                     </div>
                     <div className="option-details">
-                      <h4>全部卡片背诵</h4>
-                      <p>在所有知识库卡片中自由进行浏览和记忆</p>
+                      <h4>全部卡片背诵 (卡片自评模式)</h4>
+                      <p>进行自由背诵卡片自评，不使用快速/标准/深度模式</p>
                     </div>
                     <ChevronRight size={18} className="option-arrow" />
                   </button>
@@ -237,7 +223,7 @@ export default function HomeScreen({ startSession }) {
                   <button 
                     className="modal-option-item"
                     disabled={dueReviewCount === 0}
-                    onClick={() => handleSelectOption('start-queue', [...(reviews?.delayedQuestions || []), ...(reviews?.dueQuestions || [])], '今日复习', mode)}
+                    onClick={() => handleSelectOption('start-queue', cappedReviewQueue, '今日复习', mode)}
                     style={dueReviewCount === 0 ? { opacity: 0.6 } : {}}
                   >
                     <div className="option-icon-wrapper success">
@@ -245,7 +231,7 @@ export default function HomeScreen({ startSession }) {
                     </div>
                     <div className="option-details">
                       <h4>今日到期复习</h4>
-                      <p>巩固今天到期的 {dueReviewCount} 个核心概念（默认标准复习）</p>
+                      <p>巩固今天到期的 {dueReviewCount} 个核心概念（使用已选模式）</p>
                     </div>
                     <ChevronRight size={18} className="option-arrow" />
                   </button>

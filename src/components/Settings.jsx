@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
 
-export default function Settings({ theme, setTheme }) {
+export default function Settings({ 
+  theme, 
+  setTheme, 
+  dailyNewGoal, 
+  setDailyNewGoal, 
+  dailyReviewGoal, 
+  setDailyReviewGoal 
+}) {
   const [message, setMessage] = useState('');
 
   const handleResetApp = async () => {
@@ -30,6 +37,146 @@ export default function Settings({ theme, setTheme }) {
             {message}
           </div>
         )}
+
+        {/* Goals Config */}
+        <div style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '1.5rem' }}>
+          <h3 style={{ fontSize: '1.1rem', color: 'var(--accent)', marginBottom: '1.25rem', fontFamily: 'var(--font-display)' }}>
+            ⚙️ 每日学习与复习计划上限
+          </h3>
+          
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            {/* Daily New Goal */}
+            <div>
+              <span style={{ fontSize: '0.9rem', fontWeight: '600', display: 'block', marginBottom: '0.5rem' }}>
+                每日新学上限 (默认 20)
+              </span>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                {[10, 20, 30, 50].map(val => (
+                  <button
+                    key={val}
+                    type="button"
+                    className="text-btn"
+                    onClick={() => setDailyNewGoal(val)}
+                    style={{
+                      padding: '0.4rem 1rem',
+                      background: dailyNewGoal === val ? 'var(--accent)' : 'transparent',
+                      color: dailyNewGoal === val ? 'var(--bg-dark)' : 'var(--text-primary)',
+                      fontWeight: dailyNewGoal === val ? '700' : 'normal',
+                      borderColor: dailyNewGoal === val ? 'var(--accent)' : 'var(--border-color)',
+                      fontSize: '0.85rem'
+                    }}
+                  >
+                    {val}
+                  </button>
+                ))}
+                
+                {/* Custom input button */}
+                <button
+                  type="button"
+                  className="text-btn"
+                  onClick={() => setDailyNewGoal(25)} // Set default custom value
+                  style={{
+                    padding: '0.4rem 1rem',
+                    background: ![10, 20, 30, 50].includes(dailyNewGoal) ? 'var(--accent)' : 'transparent',
+                    color: ![10, 20, 30, 50].includes(dailyNewGoal) ? 'var(--bg-dark)' : 'var(--text-primary)',
+                    fontWeight: ![10, 20, 30, 50].includes(dailyNewGoal) ? '700' : 'normal',
+                    borderColor: ![10, 20, 30, 50].includes(dailyNewGoal) ? 'var(--accent)' : 'var(--border-color)',
+                    fontSize: '0.85rem'
+                  }}
+                >
+                  自定义
+                </button>
+                
+                {![10, 20, 30, 50].includes(dailyNewGoal) && (
+                  <input
+                    type="number"
+                    min="1"
+                    className="form-input-text"
+                    value={dailyNewGoal}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (val > 0) setDailyNewGoal(val);
+                    }}
+                    style={{ width: '80px', padding: '0.3rem 0.5rem', fontSize: '0.85rem', height: 'auto', display: 'inline-block', margin: 0 }}
+                  />
+                )}
+              </div>
+            </div>
+
+            {/* Daily Review Goal */}
+            <div>
+              <span style={{ fontSize: '0.9rem', fontWeight: '600', display: 'block', marginBottom: '0.5rem' }}>
+                每日复习上限 (默认 60)
+              </span>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                {[30, 60, 100].map(val => (
+                  <button
+                    key={val}
+                    type="button"
+                    className="text-btn"
+                    onClick={() => setDailyReviewGoal(val)}
+                    style={{
+                      padding: '0.4rem 1rem',
+                      background: dailyReviewGoal === val ? 'var(--accent)' : 'transparent',
+                      color: dailyReviewGoal === val ? 'var(--bg-dark)' : 'var(--text-primary)',
+                      fontWeight: dailyReviewGoal === val ? '700' : 'normal',
+                      borderColor: dailyReviewGoal === val ? 'var(--accent)' : 'var(--border-color)',
+                      fontSize: '0.85rem'
+                    }}
+                  >
+                    {val}
+                  </button>
+                ))}
+                
+                <button
+                  type="button"
+                  className="text-btn"
+                  onClick={() => setDailyReviewGoal('unlimited')}
+                  style={{
+                    padding: '0.4rem 1rem',
+                    background: dailyReviewGoal === 'unlimited' ? 'var(--accent)' : 'transparent',
+                    color: dailyReviewGoal === 'unlimited' ? 'var(--bg-dark)' : 'var(--text-primary)',
+                    fontWeight: dailyReviewGoal === 'unlimited' ? '700' : 'normal',
+                    borderColor: dailyReviewGoal === 'unlimited' ? 'var(--accent)' : 'var(--border-color)',
+                    fontSize: '0.85rem'
+                  }}
+                >
+                  不限制
+                </button>
+
+                <button
+                  type="button"
+                  className="text-btn"
+                  onClick={() => setDailyReviewGoal(80)} // Set default custom value
+                  style={{
+                    padding: '0.4rem 1rem',
+                    background: !['unlimited', 30, 60, 100].includes(dailyReviewGoal) ? 'var(--accent)' : 'transparent',
+                    color: !['unlimited', 30, 60, 100].includes(dailyReviewGoal) ? 'var(--bg-dark)' : 'var(--text-primary)',
+                    fontWeight: !['unlimited', 30, 60, 100].includes(dailyReviewGoal) ? '700' : 'normal',
+                    borderColor: !['unlimited', 30, 60, 100].includes(dailyReviewGoal) ? 'var(--accent)' : 'var(--border-color)',
+                    fontSize: '0.85rem'
+                  }}
+                >
+                  自定义
+                </button>
+                
+                {!['unlimited', 30, 60, 100].includes(dailyReviewGoal) && (
+                  <input
+                    type="number"
+                    min="1"
+                    className="form-input-text"
+                    value={dailyReviewGoal}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (val > 0) setDailyReviewGoal(val);
+                    }}
+                    style={{ width: '80px', padding: '0.3rem 0.5rem', fontSize: '0.85rem', height: 'auto', display: 'inline-block', margin: 0 }}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
 
         {/* Theme settings */}
         <div style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '1.5rem' }}>
@@ -109,7 +256,7 @@ export default function Settings({ theme, setTheme }) {
             系统整合了“主动回忆测试打分”与“卡片自评”双重复习时间计算模型：
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', fontSize: '0.8rem' }}>
-            <div style={{ padding: '0.75rem', background: 'rgba(0,d2,ff,0.03)', border: '1px solid rgba(0,d2,ff,0.1)', borderRadius: '6px' }}>
+            <div style={{ padding: '0.75rem', background: 'rgba(0,180,255,0.03)', border: '1px solid rgba(0,180,255,0.1)', borderRadius: '6px' }}>
               <strong style={{ color: 'var(--primary)', display: 'block', marginBottom: '0.3rem' }}>📝 主动回忆打分触发规则：</strong>
               <ul style={{ paddingLeft: '1.2rem', lineHeight: '1.5', color: 'var(--text-secondary)' }}>
                 <li>低于 5 分：<strong>第 1 天复习</strong>，掌握度下降</li>

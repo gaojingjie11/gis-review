@@ -8,6 +8,8 @@ import Settings from './components/Settings';
 import DailyPractice from './components/DailyPractice';
 import HomeScreen from './components/HomeScreen';
 import AppShell from './components/AppShell';
+import useSettings from './hooks/useSettings';
+import useReviews from './hooks/useReviews';
 import './App.css';
 import './theme/theme.css';
 
@@ -22,23 +24,34 @@ export default function App() {
   const [practiceQueueName, setPracticeQueueName] = useState('');
   const [practiceMode, setPracticeMode] = useState('standard');
 
-  // Theme state
-  const [theme, setTheme] = useState(() => {
-    return localStorage.getItem('gis_review_theme') || 'misty-rose';
-  });
+  const {
+    theme,
+    setTheme,
+    dailyNewGoal,
+    setDailyNewGoal,
+    dailyReviewGoal,
+    setDailyReviewGoal
+  } = useSettings();
+
+  const reviewsData = useReviews(dailyNewGoal, dailyReviewGoal);
 
   const toggleTheme = () => {
-    const newTheme = theme === 'orderly' ? 'misty-rose' : 'orderly';
-    setTheme(newTheme);
-    localStorage.setItem('gis_review_theme', newTheme);
+    setTheme(theme === 'orderly' ? 'misty-rose' : 'orderly');
   };
 
   const handleNavigate = (tab) => {
-    if (tab === 'dashboard') {
-      setActiveTab('home');
+    if (tab === 'dashboard' || tab === 'home') {
+      handleExitSession();
     } else {
       setActiveTab(tab);
     }
+  };
+
+  const handleExitSession = () => {
+    setPracticeQueue(null);
+    setPracticeQueueName('');
+    setPracticeMode('standard');
+    setActiveTab('home');
   };
 
   // Initialize data from database
@@ -122,6 +135,7 @@ export default function App() {
     });
     setCompletionMessage(`🎉 导入完成！成功导入 ${successCount} / ${questionsList.length} 个题目。`);
     fetchQuestions(true);
+    reviewsData.fetchReviews();
     setTimeout(() => setCompletionMessage(''), 8000);
   };
 
@@ -152,6 +166,7 @@ export default function App() {
       if (res.success) {
         // Refresh question states silently without unmounting
         fetchQuestions(true);
+        reviewsData.fetchReviews();
       } else {
         await window.customAlert('卡片评估保存失败：' + res.message);
       }
@@ -165,6 +180,7 @@ export default function App() {
     <AppShell
       activeTab={activeTab}
       setActiveTab={handleNavigate}
+      onExitSession={handleExitSession}
       theme={theme}
       toggleTheme={toggleTheme}
       backendAvailable={true}
@@ -275,6 +291,7 @@ export default function App() {
         <>
           {activeTab === 'home' && (
             <HomeScreen
+              reviewsData={reviewsData}
               startSession={(action, queue = null, name = '', mode = 'standard') => {
                 setPracticeMode(mode);
                 if (queue) {
@@ -294,10 +311,13 @@ export default function App() {
               customQueue={practiceQueue}
               customQueueName={practiceQueueName}
               practiceMode={practiceMode}
+              dailyNewGoal={dailyNewGoal}
+              dailyReviewGoal={dailyReviewGoal}
               onClearCustomQueue={() => {
                 setPracticeQueue(null);
                 setPracticeQueueName('');
               }}
+              reviewsData={reviewsData}
             />
           )}
 
@@ -308,6 +328,7 @@ export default function App() {
                 setPracticeQueueName(name);
                 setActiveTab('today-review');
               }}
+              reviewsData={reviewsData}
             />
           )}
           
@@ -319,7 +340,9 @@ export default function App() {
           )}
 
           {activeTab === 'stats' && (
-            <StatsView />
+            <StatsView 
+              reviewsData={reviewsData}
+            />
           )}
 
           {activeTab === 'editor' && (
@@ -330,7 +353,14 @@ export default function App() {
           )}
 
           {activeTab === 'settings' && (
-            <Settings theme={theme} setTheme={setTheme} />
+            <Settings 
+              theme={theme} 
+              setTheme={setTheme} 
+              dailyNewGoal={dailyNewGoal}
+              setDailyNewGoal={setDailyNewGoal}
+              dailyReviewGoal={dailyReviewGoal}
+              setDailyReviewGoal={setDailyReviewGoal}
+            />
           )}
         </>
       )}

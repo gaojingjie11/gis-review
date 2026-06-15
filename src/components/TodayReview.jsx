@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from 'react';
 
-export default function TodayReview({ onNavigate, customQueue, customQueueName, practiceMode, onClearCustomQueue }) {
+export default function TodayReview({ onNavigate, customQueue, customQueueName, practiceMode, onClearCustomQueue, reviewsData }) {
   const [loading, setLoading] = useState(true);
   const [currentPracticeMode, setCurrentPracticeMode] = useState(practiceMode || 'standard');
-  const [reviews, setReviews] = useState({
+  const [aiSkipped, setAiSkipped] = useState(false);
+  
+  const reviews = reviewsData?.reviews || {
     newQuestions: [],
     dueQuestions: [],
     errorReinforcement: [],
     delayedQuestions: [],
     allReviews: []
-  });
+  };
   
   // Database wide questions for Free Practice
   const [allQuestions, setAllQuestions] = useState([]);
@@ -48,18 +50,16 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
   const fetchReviews = async () => {
     setLoading(true);
     try {
-      // 1. Fetch Spaced Repetition queue
-      const resReviews = await fetch('/api/today-reviews');
-      const dataReviews = await resReviews.json();
-      if (dataReviews.success) {
-        setReviews(dataReviews.data);
-      }
-
-      // 2. Fetch all questions for free practice options
+      // 1. Fetch all questions for free practice options
       const resAll = await fetch('/api/questions');
       const dataAll = await resAll.json();
       if (dataAll.success) {
         setAllQuestions(dataAll.data);
+      }
+
+      // 2. Refresh parent review data
+      if (reviewsData && reviewsData.fetchReviews) {
+        await reviewsData.fetchReviews();
       }
     } catch (err) {
       console.error('Failed to fetch reviews:', err);
@@ -75,10 +75,8 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
     setCurrentIndex(0);
     
     // Resolve mode based on queue name defaults or requested mode
-    let targetMode = mode;
-    if (name === '今日复习') {
-      targetMode = 'standard';
-    } else if (name === '错题强化') {
+    let targetMode = mode || 'standard';
+    if (name === '错题强化') {
       targetMode = 'deep';
     }
     setCurrentPracticeMode(targetMode);
@@ -95,6 +93,7 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
     setGradingResult(null);
     setIsGrading(false);
     setActiveReportTab('cloze');
+    setAiSkipped(false);
   };
 
   // Reset study state whenever question index or queue changes
@@ -104,22 +103,171 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
     }
   }, [currentIndex, activeQueue]);
 
+  // --- Cloze validation and loose grading helpers ---
+  const shouldDigKeyword = (kw, questionTitle, clozeAnswer) => {
+    if (!kw || typeof kw !== 'string') return false;
+    
+    const cleanStr = (s) => (s || '').toLowerCase().replace(/[\s\(\)（）\-\_\,\.\?\!\，\。等是：\:：；;\s]/g, '');
+    const cleanKw = cleanStr(kw);
+    const cleanTitle = cleanStr(questionTitle);
+    
+    if (cleanKw.length < 2) return false; // Too short to be a meaningful blank
+    
+    // Rule 1: Do not dig if keyword is inside title or title is inside keyword
+    if (cleanTitle.includes(cleanKw) || cleanKw.includes(cleanTitle)) {
+      return false;
+    }
+    
+    // Rule 2: Do not dig opening repetition of the concept
+    const kwIndex = clozeAnswer.toLowerCase().indexOf(kw.toLowerCase());
+    if (kwIndex !== -1 && kwIndex < 20) {
+      let commonChars = 0;
+      for (const char of cleanKw) {
+        if (cleanTitle.includes(char)) commonChars++;
+      }
+      if (commonChars / cleanKw.length > 0.5) {
+        return false;
+      }
+    }
+
+    // Rule 3: Do not dig words around/before/after hint tags
+    if (kwIndex !== -1) {
+      const startIdx = Math.max(0, kwIndex - 20);
+      const precedingText = clozeAnswer.substring(startIdx, kwIndex);
+      const hintRegex = /(核心定义|基本本质|主要包括|是指|概念|定义|本质|包括|即为|称为|简述)[：:\s是]*$/i;
+      if (hintRegex.test(precedingText.trim())) {
+        let commonChars = 0;
+        for (const char of cleanKw) {
+          if (cleanTitle.includes(char)) commonChars++;
+        }
+        if (commonChars / cleanKw.length > 0.4) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  };
+
+  const isClozeAnswerCorrect = (userAns, standardKw) => {
+    if (!userAns || !standardKw) return false;
+    
+    const cleanStr = (s) => s.toLowerCase().replace(/[\s\(\)（）\-\_\,\.\?\!\，\。等是：\:：；;\"\'“”‘’]/g, '');
+    const u = cleanStr(userAns);
+    const s = cleanStr(standardKw);
+    
+    if (!u || !s) return false;
+    
+    // Rule 1: Exact match
+    if (u === s) return true;
+    
+    // Rule 2: Inclusion match (length >= 2 to avoid trivial matches)
+    if (u.length >= 2 && (s.includes(u) || u.includes(s))) {
+      return true;
+    }
+    
+    // Rule 3: Synonym dictionary match
+    const SYNONYMS = [
+      ["gis", "地理信息系统"],
+      ["gps", "全球定位系统"],
+      ["rs", "遥感"],
+      ["空间", "地理空间"],
+      ["属性", "非几何"],
+      ["矢量", "向量"],
+      ["栅格", "网格", "象元"],
+      ["拓扑", "空间拓扑"],
+      ["元数据", "metadata"],
+      ["客户端", "client"],
+      ["服务端", "server"],
+      ["数据库", "db"]
+    ];
+    
+    for (const group of SYNONYMS) {
+      const stdMatches = group.some(item => s.includes(cleanStr(item)) || cleanStr(item).includes(s));
+      const userMatches = group.some(item => u.includes(cleanStr(item)) || cleanStr(item).includes(u));
+      if (stdMatches && userMatches) {
+        return true;
+      }
+    }
+    
+    // Rule 4: Typo / Character overlap (length >= 3, threshold 70%)
+    if (s.length >= 3) {
+      let matchCount = 0;
+      const sChars = s.split('');
+      const uChars = u.split('');
+      const matchedIndices = new Set();
+      
+      uChars.forEach(char => {
+        const idx = sChars.findIndex((sChar, index) => sChar === char && !matchedIndices.has(index));
+        if (idx !== -1) {
+          matchCount++;
+          matchedIndices.add(idx);
+        }
+      });
+      
+      const maxLen = Math.max(s.length, u.length);
+      if (matchCount / maxLen >= 0.7) {
+        return true;
+      }
+    }
+    
+    return false;
+  };
+
+  const getFilteredClozeParts = (questionTitle, clozeAnswer) => {
+    const parts = (clozeAnswer || '').split(/(\*\*.*?\*\*)/);
+    const processedParts = [];
+    let dugCount = 0;
+    
+    parts.forEach((part) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        const kw = part.slice(2, -2);
+        const isValid = shouldDigKeyword(kw, questionTitle, clozeAnswer);
+        
+        if (isValid && dugCount < 5) {
+          processedParts.push({
+            type: 'blank',
+            text: kw,
+            inputKey: `kw_${dugCount}`
+          });
+          dugCount++;
+        } else {
+          processedParts.push({
+            type: 'text',
+            text: kw,
+            isBold: true
+          });
+        }
+      } else {
+        processedParts.push({
+          type: 'text',
+          text: part,
+          isBold: false
+        });
+      }
+    });
+
+    return { processedParts, dugCount };
+  };
+
   // Step 1: Cloze evaluation locally, transition to Step 2
   const handleClozeNext = () => {
     const currentQ = activeQueue[currentIndex];
     if (!currentQ) return;
 
-    const keywords = currentQ.cloze_keywords || [];
+    const { processedParts, dugCount } = getFilteredClozeParts(currentQ.question, currentQ.cloze_answer);
     let correctCount = 0;
 
-    keywords.forEach((kw, idx) => {
-      const ans = (clozeAnswers[`kw_${idx}`] || '').trim();
-      if (ans.toLowerCase() === kw.toLowerCase()) {
-        correctCount++;
+    processedParts.forEach((part) => {
+      if (part.type === 'blank') {
+        const ans = (clozeAnswers[part.inputKey] || '').trim();
+        if (isClozeAnswerCorrect(ans, part.text)) {
+          correctCount++;
+        }
       }
     });
 
-    const score = keywords.length > 0 ? parseFloat(((correctCount / keywords.length) * 10).toFixed(1)) : 10;
+    const score = dugCount > 0 ? parseFloat(((correctCount / dugCount) * 10).toFixed(1)) : 10;
     setClozeScore(score);
     setStep(2);
   };
@@ -165,17 +313,19 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
     setIsGrading(true);
     setIsSubmitted(true);
 
-    const keywords = currentQ.cloze_keywords || [];
+    const { processedParts, dugCount } = getFilteredClozeParts(currentQ.question, currentQ.cloze_answer);
     let correctCount = 0;
 
-    keywords.forEach((kw, idx) => {
-      const ans = (clozeAnswers[`kw_${idx}`] || '').trim();
-      if (ans.toLowerCase() === kw.toLowerCase()) {
-        correctCount++;
+    processedParts.forEach((part) => {
+      if (part.type === 'blank') {
+        const ans = (clozeAnswers[part.inputKey] || '').trim();
+        if (isClozeAnswerCorrect(ans, part.text)) {
+          correctCount++;
+        }
       }
     });
 
-    const score = keywords.length > 0 ? parseFloat(((correctCount / keywords.length) * 10).toFixed(1)) : 10;
+    const score = dugCount > 0 ? parseFloat(((correctCount / dugCount) * 10).toFixed(1)) : 10;
     setClozeScore(score);
 
     try {
@@ -234,6 +384,7 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
 
     setIsGrading(true);
     setIsSubmitted(true);
+    setAiSkipped(true);
 
     try {
       const res = await fetch('/api/ai/grade', {
@@ -261,6 +412,43 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
     }
   };
 
+  // Standard Mode: Request AI detailed review recheck and save to database
+  const handleRequestAiRecheck = async () => {
+    const currentQ = activeQueue[currentIndex];
+    if (!currentQ) return;
+
+    setIsGrading(true);
+
+    try {
+      const res = await fetch('/api/ai/grade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          questionId: currentQ.id,
+          clozeScore: clozeScore,
+          clozeAnswers,
+          fullAnswerInput: fullAnswerInput.trim(),
+          skipAI: false
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setGradingResult(data.data);
+        setAiSkipped(false);
+        if (reviewsData && reviewsData.fetchReviews) {
+          await reviewsData.fetchReviews();
+        }
+      } else {
+        await window.customAlert('AI 复核评估失败: ' + data.message);
+      }
+    } catch (err) {
+      console.error(err);
+      await window.customAlert('打分请求错误，请检查网络或后端配置。');
+    } finally {
+      setIsGrading(false);
+    }
+  };
+
   const handleNext = async () => {
     if (currentIndex < activeQueue.length - 1) {
       setCurrentIndex(prev => prev + 1);
@@ -279,18 +467,16 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
   };
 
   // --- Helper: Render standard answer with input boxes for Cloze mode ---
-  const renderClozeText = (description) => {
-    const parts = (description || '').split(/(\*\*.*?\*\*)/);
-    let keywordIdx = 0;
+  const renderClozeText = (questionTitle, description) => {
+    const { processedParts } = getFilteredClozeParts(questionTitle, description);
     
-    return parts.map((part, index) => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        const standardKw = part.slice(2, -2);
-        const inputKey = `kw_${keywordIdx}`;
-        keywordIdx++;
+    return processedParts.map((part, index) => {
+      if (part.type === 'blank') {
+        const standardKw = part.text;
+        const inputKey = part.inputKey;
         
         const userAnswer = (clozeAnswers[inputKey] || '').trim();
-        const isCorrect = userAnswer.toLowerCase() === standardKw.toLowerCase();
+        const isCorrect = isClozeAnswerCorrect(userAnswer, standardKw);
         
         return (
           <span key={index} style={{ display: 'inline-flex', alignItems: 'center', margin: '0 4px', verticalAlign: 'middle' }}>
@@ -321,7 +507,7 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
           </span>
         );
       }
-      return <span key={index}>{part}</span>;
+      return part.isBold ? <strong key={index}>{part.text}</strong> : <span key={index}>{part.text}</span>;
     });
   };
 
@@ -337,7 +523,7 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
   const filteredFreeList = allQuestions.filter(q => {
     const subMatch = !freeSubject || q.subject === freeSubject;
     const chapMatch = !freeChapter || q.chapter === freeChapter;
-    const typeMatch = !freeType || q.type === freeType;
+    const typeMatch = !freeType || q.question_type === freeType;
     return subMatch && chapMatch && typeMatch;
   });
 
@@ -379,27 +565,27 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
                   今日复习推荐
                 </h2>
                 <p style={{ color: 'var(--text-secondary)', lineHeight: '1.6' }}>
-                  根据艾宾浩斯记忆规律与莱特纳卡片盒算法，今天需要复习 <strong>{totalDueCount}</strong> 道题目。
+                  根据艾宾浩斯记忆规律与莱特纳卡片盒算法，今天共有 <strong>{reviewsData?.actualDueCount || 0}</strong> 道到期复习题目，今日计划复习 <strong>{reviewsData?.dueReviewCount || 0}</strong> 道。
                   包含 <strong>{reviews.delayedQuestions.length}</strong> 道延误题目，以及 <strong>{reviews.dueQuestions.length}</strong> 道到期复习题目。
                 </p>
               </div>
 
               <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-                {totalDueCount > 0 ? (
+                {(reviewsData?.dueReviewCount || 0) > 0 ? (
                   <button 
                     className="text-btn primary-btn" 
                     style={{ padding: '0.8rem 2rem', fontSize: '1rem' }}
-                    onClick={() => startQueue('今日复习', [...reviews.delayedQuestions, ...reviews.dueQuestions])}
+                    onClick={() => startQueue('今日复习', reviewsData.cappedReviewQueue, 'standard')}
                   >
-                    🚀 开始今日复习 ({totalDueCount})
+                    🚀 开始今日复习 ({reviewsData.dueReviewCount})
                   </button>
-                ) : reviews.newQuestions.length > 0 ? (
+                ) : (reviewsData?.cappedLearnQueue?.length || 0) > 0 ? (
                   <button 
                     className="text-btn primary-btn" 
                     style={{ padding: '0.8rem 2rem', fontSize: '1rem', background: 'var(--primary)', boxShadow: '0 0 15px rgba(0, 210, 255, 0.4)' }}
-                    onClick={() => startQueue('新题学习', reviews.newQuestions)}
+                    onClick={() => startQueue('新题学习', reviewsData.cappedLearnQueue, 'standard')}
                   >
-                    🆕 开始新题学习 ({reviews.newQuestions.length})
+                    🆕 开始新题学习 ({reviewsData.cappedLearnQueue.length})
                   </button>
                 ) : (
                   <button 
@@ -536,10 +722,10 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
                   <button 
                     className="text-btn" 
                     style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem' }}
-                    disabled={reviews.newQuestions.length === 0}
-                    onClick={() => startQueue('新题学习', reviews.newQuestions)}
+                    disabled={(reviewsData?.cappedLearnQueue?.length || 0) === 0}
+                    onClick={() => startQueue('新题学习', reviewsData.cappedLearnQueue, 'standard')}
                   >
-                    开始 ({reviews.newQuestions.length})
+                    开始 ({reviewsData?.cappedLearnQueue?.length || 0})
                   </button>
                 </div>
 
@@ -641,7 +827,7 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
             color: 'var(--primary)',
             fontWeight: '600'
           }}>
-            {currentQ.type || '三合一综合题'}
+            {currentQ.question_type || '名词解释'}
           </span>
           <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
             掌握等级: Box {currentQ.mastery_level}
@@ -661,7 +847,7 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontWeight: '600', fontSize: '0.95rem' }}>🧩 第一步：请填入正确的加粗关键字</span>
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                  挖空数量: {currentQ.cloze_keywords?.length || 0}空
+                  挖空数量: {getFilteredClozeParts(currentQ.question, currentQ.cloze_answer).dugCount}空
                 </span>
               </div>
               
@@ -674,7 +860,7 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
                 border: '1px solid var(--border-color)',
                 whiteSpace: 'pre-line'
               }}>
-                {renderClozeText(currentQ.cloze_answer)}
+                {renderClozeText(currentQ.question, currentQ.cloze_answer)}
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
@@ -709,6 +895,17 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                   要求：尽量完整详尽地写出所有展开细节、背景理论及完整的对比阐述。
                 </span>
+                <div style={{ 
+                  fontSize: '0.8rem', 
+                  color: 'var(--accent)', 
+                  background: 'rgba(0, 210, 255, 0.1)', 
+                  padding: '0.5rem 0.75rem', 
+                  borderRadius: '6px', 
+                  marginTop: '0.5rem',
+                  borderLeft: '3px solid var(--accent)'
+                }}>
+                  💡 <strong>提示：</strong>请先回忆核心定义、关键词和主要要点，再尽量写成考场可直接作答的完整答案。
+                </div>
               </div>
               
               <textarea
@@ -860,7 +1057,7 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
                       border: '1px solid var(--border-color)',
                       whiteSpace: 'pre-line'
                     }}>
-                      {renderClozeText(currentQ.cloze_answer)}
+                      {renderClozeText(currentQ.question, currentQ.cloze_answer)}
                     </div>
                     <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                       说明：加粗部分为记忆核心词。答错词后面会用括号标注标准词汇。
@@ -918,7 +1115,19 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
                 )}
 
                 {/* Action buttons */}
-                <div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid var(--border-color)', paddingTop: '1rem', marginTop: '0.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-color)', paddingTop: '1rem', marginTop: '0.5rem' }}>
+                  <div>
+                    {currentPracticeMode === 'standard' && aiSkipped && (
+                      <button 
+                        type="button"
+                        className="text-btn"
+                        style={{ padding: '0.75rem 1.5rem', background: 'var(--accent)', color: 'var(--bg-dark)', fontWeight: '700' }}
+                        onClick={handleRequestAiRecheck}
+                      >
+                        🧠 申请 AI 深度阅卷复核
+                      </button>
+                    )}
+                  </div>
                   <button 
                     className="text-btn primary-btn"
                     style={{ padding: '0.75rem 2.5rem' }}

@@ -1,27 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 
-export default function StatsView() {
-  const [stats, setStats] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetchStats();
-  }, []);
-
-  const fetchStats = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/statistics');
-      const data = await res.json();
-      if (data.success) {
-        setStats(data.data);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
+export default function StatsView({ reviewsData }) {
+  const stats = reviewsData?.stats;
+  const loading = reviewsData?.loading;
 
   if (loading) {
     return (
@@ -32,11 +13,20 @@ export default function StatsView() {
     );
   }
 
-  if (!stats) return null;
-
-  // Simple calculation for percentage
-  const total = stats.totalQuestions || 1;
-  const learnedPercentage = Math.round((stats.learnedQuestions / total) * 100);
+  if (!stats) {
+    return (
+      <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
+        <p style={{ color: 'var(--text-secondary)' }}>暂无统计数据，请先开始背诵复习。</p>
+        <button 
+          className="text-btn" 
+          onClick={() => reviewsData?.fetchReviews()}
+          style={{ marginTop: '1rem' }}
+        >
+          🔄 重新加载
+        </button>
+      </div>
+    );
+  }
 
   // Box details helper
   const levelNames = {
@@ -53,6 +43,32 @@ export default function StatsView() {
       
       <div className="section-title">
         <span>📊 考研背诵统计与弱点分析</span>
+      </div>
+
+      {/* Priority Chapter & Weakest Chapter Recommendation Banner */}
+      <div className="glass-panel" style={{ 
+        padding: '1.25rem 1.5rem', 
+        background: 'rgba(0, 210, 255, 0.05)', 
+        borderColor: 'var(--primary)', 
+        display: 'flex', 
+        justifyContent: 'space-between', 
+        alignItems: 'center', 
+        flexWrap: 'wrap', 
+        gap: '1rem' 
+      }}>
+        <div>
+          <h4 style={{ color: 'var(--primary)', fontWeight: 'bold', fontSize: '1rem' }}>💡 智能复习决策建议</h4>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+            建议最优先攻坚章节：<strong>{stats.highestPriorityChapter || '无'}</strong> | 最薄弱模块：<strong>{stats.weakestChapter || '无'}</strong>
+          </p>
+        </div>
+        <button 
+          className="text-btn" 
+          style={{ padding: '0.4rem 1rem', fontSize: '0.8rem' }}
+          onClick={() => reviewsData?.fetchReviews()}
+        >
+          🔄 刷新统计
+        </button>
       </div>
 
       {/* Stats Cards Row */}
@@ -83,7 +99,7 @@ export default function StatsView() {
         </div>
       </div>
 
-      {/* Grid: Mastery Levels & 7 Days Activity */}
+      {/* Grid: Mastery Levels & Weakness Chapters */}
       <div className="dashboard-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', flexWrap: 'wrap' }}>
         
         {/* Mastery Distribution */}
@@ -94,7 +110,7 @@ export default function StatsView() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
             {Object.keys(levelNames).map(lvlKey => {
               const lvl = parseInt(lvlKey);
-              const count = stats.levelDistribution[lvl] || 0;
+              const count = stats.levelDistribution?.[lvl] || 0;
               const barPercentage = stats.totalQuestions > 0 ? Math.round((count / stats.totalQuestions) * 100) : 0;
               
               return (
@@ -155,17 +171,43 @@ export default function StatsView() {
 
       </div>
 
-      {/* Grid: Hardest Questions & Chapter Progress */}
+      {/* Grid: AI Mistakes & Hardest Questions */}
       <div className="dashboard-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', flexWrap: 'wrap' }}>
         
-        {/* Hardest Questions */}
+        {/* AI Common Mistakes */}
         <div className="glass-panel" style={{ padding: '1.5rem' }}>
-          <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem', color: 'var(--warning)', fontFamily: 'var(--font-display)' }}>
-            🔥 错误率最高题目 (高频攻坚)
+          <h3 style={{ fontSize: '1.1rem', marginBottom: '1.25rem', color: 'var(--accent)', fontFamily: 'var(--font-display)' }}>
+            🤖 AI 常见漏答/失分要点 (Top 5)
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {stats.hardestQuestions && stats.hardestQuestions.length > 0 ? (
-              stats.hardestQuestions.map((q, idx) => (
+            {stats.aiCommonMistakes && stats.aiCommonMistakes.length > 0 ? (
+              stats.aiCommonMistakes.map((m, idx) => (
+                <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0', borderBottom: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
+                  <div style={{ flex: 1, marginRight: '1rem' }}>
+                    <span style={{ color: 'var(--text-muted)', marginRight: '0.5rem' }}>#{idx+1}</span>
+                    <span style={{ fontWeight: '500', color: 'var(--text-primary)' }}>{m.point}</span>
+                  </div>
+                  <span style={{ color: 'var(--accent)', fontSize: '0.8rem', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
+                    遗漏 {m.count} 次
+                  </span>
+                </div>
+              ))
+            ) : (
+              <div style={{ textAlign: 'center', padding: '3rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                暂无 AI 漏答点数据。在深度或标准自测中，AI 会自动记录被遗漏的得分点。
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Top 10 Hardest Questions */}
+        <div className="glass-panel" style={{ padding: '1.5rem' }}>
+          <h3 style={{ fontSize: '1.1rem', marginBottom: '1.25rem', color: 'var(--warning)', fontFamily: 'var(--font-display)' }}>
+            🔥 高频错题攻坚 (Top 10)
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '320px', overflowY: 'auto' }}>
+            {stats.top10Hardest && stats.top10Hardest.length > 0 ? (
+              stats.top10Hardest.map((q, idx) => (
                 <div key={q.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0', borderBottom: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
                   <div style={{ flex: 1, marginRight: '1rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     <span style={{ color: 'var(--text-muted)', marginRight: '0.5rem' }}>#{idx+1}</span>
@@ -178,19 +220,61 @@ export default function StatsView() {
                 </div>
               ))
             ) : (
-              <div style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--text-muted)' }}>
+              <div style={{ textAlign: 'center', padding: '3rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                 暂无高频错误题目。
               </div>
             )}
           </div>
         </div>
 
-        {/* Chapter Progress list */}
+      </div>
+
+      {/* Grid: Upcoming Forgotten & Chapter progress */}
+      <div className="dashboard-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', flexWrap: 'wrap' }}>
+        
+        {/* Upcoming Forgotten */}
         <div className="glass-panel" style={{ padding: '1.5rem' }}>
-          <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem', fontFamily: 'var(--font-display)' }}>
+          <h3 style={{ fontSize: '1.1rem', marginBottom: '1.25rem', color: 'var(--primary)', fontFamily: 'var(--font-display)' }}>
+            ⏳ 即将遗忘/待温故题目 (前5)
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {stats.upcomingForgotten && stats.upcomingForgotten.length > 0 ? (
+              stats.upcomingForgotten.map((q, idx) => {
+                const nextTime = q.next_review_time ? new Date(q.next_review_time) : null;
+                const isOverdue = nextTime ? nextTime <= new Date() : true;
+                const timeStr = nextTime 
+                  ? nextTime.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) 
+                  : '已到期';
+                
+                return (
+                  <div key={q.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0', borderBottom: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
+                    <div style={{ flex: 1, marginRight: '1rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span style={{ color: 'var(--text-muted)', marginRight: '0.5rem' }}>#{idx+1}</span>
+                      <span style={{ fontWeight: '500' }}>{q.question}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '1rem', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>
+                      <span style={{ color: isOverdue ? 'var(--danger)' : 'var(--text-secondary)' }}>
+                        {isOverdue ? '已到期' : `计划: ${timeStr}`}
+                      </span>
+                      <span style={{ color: 'var(--primary)', fontWeight: 'bold' }}>Box {q.mastery_level}</span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div style={{ textAlign: 'center', padding: '3rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                暂无记忆库中的卡片。
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Chapter Progress */}
+        <div className="glass-panel" style={{ padding: '1.5rem' }}>
+          <h3 style={{ fontSize: '1.1rem', marginBottom: '1.25rem', fontFamily: 'var(--font-display)' }}>
             📖 各章节背诵进度
           </h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '250px', overflowY: 'auto' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '280px', overflowY: 'auto' }}>
             {stats.chapterProgress && stats.chapterProgress.length > 0 ? (
               stats.chapterProgress.map((ch, idx) => {
                 const total = parseInt(ch.total_count) || 1;
@@ -216,7 +300,7 @@ export default function StatsView() {
                 );
               })
             ) : (
-              <div style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--text-muted)' }}>
+              <div style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                 暂无章节统计数据。
               </div>
             )}
@@ -227,7 +311,7 @@ export default function StatsView() {
 
       {/* 7 Days Trend Table */}
       <div className="glass-panel" style={{ padding: '1.5rem' }}>
-        <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem', fontFamily: 'var(--font-display)' }}>
+        <h3 style={{ fontSize: '1.1rem', marginBottom: '1.25rem', fontFamily: 'var(--font-display)' }}>
           📈 近 7 天背诵趋势
         </h3>
         {stats.last7DaysActivity && stats.last7DaysActivity.length > 0 ? (
@@ -266,8 +350,8 @@ export default function StatsView() {
             </table>
           </div>
         ) : (
-          <div style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--text-muted)' }}>
-            近7天内尚未记录背诵历史。开启“主动回忆”作答后将自动记录趋势。
+          <div style={{ textAlign: 'center', padding: '3rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+            近 7 天内尚未记录背诵历史。开启复习作答后将自动记录趋势。
           </div>
         )}
       </div>
