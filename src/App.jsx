@@ -41,6 +41,67 @@ export default function App() {
     };
   }, []);
 
+  const [importState, setImportState] = useState({
+    isImporting: false,
+    total: 0,
+    current: 0,
+    currentTitle: '',
+    message: ''
+  });
+  const [completionMessage, setCompletionMessage] = useState('');
+
+  const startGlobalImport = async (questionsList, useAI, defaultSubject) => {
+    setImportState({
+      isImporting: true,
+      total: questionsList.length,
+      current: 0,
+      currentTitle: '',
+      message: `🔄 正在准备导入 ${questionsList.length} 个题目...`
+    });
+    setCompletionMessage('');
+
+    let successCount = 0;
+    for (let i = 0; i < questionsList.length; i++) {
+      const q = questionsList[i];
+      setImportState(prev => ({
+        ...prev,
+        current: i,
+        currentTitle: q.title,
+        message: `🔄 正在处理 (${i + 1}/${questionsList.length}): ${q.title}...`
+      }));
+
+      try {
+        const endpoint = useAI ? '/api/questions/import-ai' : '/api/questions/import';
+        const payload = useAI 
+          ? { text: q.text, defaultSubject: defaultSubject || '地理信息系统', defaultChapter: q.chapter }
+          : { format: 'markdown', content: q.text };
+
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          successCount++;
+        }
+      } catch (err) {
+        console.error(`Failed to import question: ${q.title}`, err);
+      }
+    }
+
+    setImportState({
+      isImporting: false,
+      total: 0,
+      current: 0,
+      currentTitle: '',
+      message: ''
+    });
+    setCompletionMessage(`🎉 导入完成！成功导入 ${successCount} / ${questionsList.length} 个题目。`);
+    fetchQuestions(true);
+    setTimeout(() => setCompletionMessage(''), 8000);
+  };
+
   const fetchQuestions = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
@@ -79,6 +140,101 @@ export default function App() {
 
   return (
     <div className="app-container">
+      {/* Floating Global Import Progress Banner */}
+      {importState.isImporting && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 9999,
+          background: 'rgba(10, 15, 30, 0.95)',
+          backdropFilter: 'blur(8px)',
+          borderBottom: '1px solid var(--primary)',
+          padding: '0.75rem 1.5rem',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          boxShadow: '0 4px 20px rgba(0, 210, 255, 0.15)',
+          boxSizing: 'border-box'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flex: 1 }}>
+            <div className="spinner" style={{ width: '1.25rem', height: '1.25rem', borderWidth: '2px', margin: 0 }}></div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
+              <span style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+                {importState.message}
+              </span>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                当前处理: {importState.currentTitle || '准备中...'}
+              </span>
+            </div>
+          </div>
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', minWidth: '300px' }}>
+            <div style={{ 
+              flex: 1, 
+              height: '6px', 
+              backgroundColor: 'rgba(255, 255, 255, 0.05)', 
+              borderRadius: '3px',
+              overflow: 'hidden',
+              border: '1px solid rgba(255, 255, 255, 0.05)'
+            }}>
+              <div style={{ 
+                width: `${(importState.current / importState.total) * 100}%`, 
+                height: '100%', 
+                backgroundColor: 'var(--primary)',
+                boxShadow: '0 0 8px var(--primary)',
+                borderRadius: '3px',
+                transition: 'width 0.4s ease-out'
+              }}></div>
+            </div>
+            <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--primary)', minWidth: '40px', textAlign: 'right' }}>
+              {Math.round((importState.current / importState.total) * 100)}%
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Completion Success Banner */}
+      {completionMessage && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 9999,
+          background: 'rgba(16, 185, 129, 0.95)',
+          backdropFilter: 'blur(8px)',
+          borderBottom: '1px solid var(--success)',
+          padding: '0.75rem 1.5rem',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '0.5rem',
+          boxShadow: '0 4px 20px rgba(16, 185, 129, 0.2)',
+          color: '#fff',
+          fontSize: '0.85rem',
+          fontWeight: '600',
+          boxSizing: 'border-box'
+        }}>
+          <span>{completionMessage}</span>
+          <button 
+            onClick={() => setCompletionMessage('')}
+            style={{ 
+              background: 'none', 
+              border: 'none', 
+              color: '#fff', 
+              cursor: 'pointer', 
+              fontSize: '1rem',
+              marginLeft: '1rem',
+              display: 'flex',
+              alignItems: 'center'
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
       {/* Navigation Header */}
       <header className="nav-header">
         <div className="logo-section">
@@ -166,7 +322,10 @@ export default function App() {
             )}
 
             {activeTab === 'editor' && (
-              <QuestionManager />
+              <QuestionManager 
+                globalImportState={importState}
+                onStartGlobalImport={startGlobalImport}
+              />
             )}
 
             {activeTab === 'settings' && (

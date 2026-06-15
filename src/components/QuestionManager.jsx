@@ -1,6 +1,72 @@
 import React, { useState, useEffect } from 'react';
 
-export default function QuestionManager() {
+function splitTextIntoQuestions(text, defaultChapter) {
+  const lines = text.split('\n');
+  const questions = [];
+  let currentChapter = defaultChapter || "未分类";
+  let currentQ = null;
+
+  // We look for patterns like:
+  // **1、地理数据和地理信息** or ### 1、地理数据 or 1. 地理数据
+  const headerRegex = /^(?:###\s*|\*\*\s*|\*\s*)?(\d+)[、\.]\s*(.*?)(?:\*\*|$)/;
+
+  for (let line of lines) {
+    const lineStr = line.trim();
+    if (!lineStr) continue;
+
+    // Check for chapter marker: e.g. **6月12日背诵内容：地理信息系统基础理论**
+    const chapterMatch = lineStr.match(/背诵内容[：:](.*?)(?:\*\*|$)/);
+    if (chapterMatch) {
+      let chapterName = chapterMatch[1].trim();
+      chapterName = chapterName.replace(/\*+$/, '').trim();
+      currentChapter = chapterName;
+      continue;
+    }
+
+    const qMatch = lineStr.match(headerRegex);
+    if (qMatch) {
+      if (currentQ) {
+        questions.push(currentQ);
+      }
+      const qNum = parseInt(qMatch[1]);
+      let title = qMatch[2].trim();
+      title = title.replace(/\*+$/, '').trim();
+
+      currentQ = {
+        number: qNum,
+        title: title,
+        chapter: currentChapter,
+        lines: [line]
+      };
+    } else {
+      if (currentQ) {
+        currentQ.lines.push(line);
+      }
+    }
+  }
+
+  if (currentQ) {
+    questions.push(currentQ);
+  }
+
+  // Fallback: If no headings were matched, treat the whole text as a single question
+  if (questions.length === 0 && text.trim()) {
+    questions.push({
+      number: 1,
+      title: "导入的内容",
+      chapter: currentChapter,
+      lines: lines
+    });
+  }
+
+  return questions.map(q => ({
+    title: q.title,
+    chapter: q.chapter,
+    text: q.lines.join('\n')
+  }));
+}
+
+export default function QuestionManager({ globalImportState, onStartGlobalImport }) {
   const [questions, setQuestions] = useState([]);
   const [selectedQuestion, setSelectedQuestion] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -198,32 +264,43 @@ export default function QuestionManager() {
     e.preventDefault();
     if (!importContent.trim()) return;
 
-    setIsImporting(true);
-    setImportMessage('');
-
-    try {
-      const endpoint = importUseAI ? '/api/questions/import-ai' : '/api/questions/import';
-      const bodyPayload = importUseAI 
-        ? { text: importContent, defaultSubject: importSubject, defaultChapter: importChapter }
-        : { format: importFormat, content: importContent };
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(bodyPayload)
-      });
-      const data = await res.json();
-      if (data.success) {
-        setImportMessage(`🎉 成功导入：${data.message}`);
-        setImportContent('');
-        fetchQuestions();
-      } else {
-        setImportMessage(`❌ 导入失败：${data.message}`);
+    if (onStartGlobalImport) {
+      const questionsList = splitTextIntoQuestions(importContent, importChapter);
+      if (questionsList.length === 0) {
+        setImportMessage('❌ 未识别到任何有效的题目格式。请确认文档结构是否正确（如包含：1、题目 或 ### 1. 题目 等）。');
+        return;
       }
-    } catch (err) {
-      setImportMessage(`❌ 发生错误：${err.message}`);
-    } finally {
-      setIsImporting(false);
+      onStartGlobalImport(questionsList, importUseAI, importSubject);
+      setImportContent('');
+      setImportMessage(`🔄 已成功识别并启动后台全局导入任务（共识别到 ${questionsList.length} 个题目），您可以安全离开此界面进行其他操作，顶部将显示实时进度条。`);
+    } else {
+      setIsImporting(true);
+      setImportMessage('');
+
+      try {
+        const endpoint = importUseAI ? '/api/questions/import-ai' : '/api/questions/import';
+        const bodyPayload = importUseAI 
+          ? { text: importContent, defaultSubject: importSubject, defaultChapter: importChapter }
+          : { format: importFormat, content: importContent };
+
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(bodyPayload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          setImportMessage(`🎉 成功导入：${data.message}`);
+          setImportContent('');
+          fetchQuestions();
+        } else {
+          setImportMessage(`❌ 导入失败：${data.message}`);
+        }
+      } catch (err) {
+        setImportMessage(`❌ 发生错误：${err.message}`);
+      } finally {
+        setIsImporting(false);
+      }
     }
   };
 
