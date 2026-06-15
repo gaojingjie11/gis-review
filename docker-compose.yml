@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "5005:5000"
+    env_file:
+      - .env
+    environment:
+      # Override the PORT from .env so the container internally runs on 5000
+      - PORT=5000
+    restart: always

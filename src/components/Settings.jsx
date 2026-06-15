@@ -1,209 +1,111 @@
 import React, { useState } from 'react';
 
-export default function Settings({ settings, onSaveSettings, onSyncCloud, isSyncing }) {
-  const [apiKey, setApiKey] = useState(settings.apiKey || '');
-  const [apiUrl, setApiUrl] = useState(settings.apiUrl || 'https://api.siliconflow.cn/v1');
-  const [apiModel, setApiModel] = useState(settings.apiModel || 'Qwen/Qwen2.5-7B-Instruct');
+export default function Settings() {
+  const [theme, setTheme] = useState('dark');
+  const [message, setMessage] = useState('');
 
-  // WebDAV Configuration
-  const [webdavEnabled, setWebdavEnabled] = useState(settings.webdavEnabled || false);
-  const [webdavUrl, setWebdavUrl] = useState(settings.webdavUrl || 'https://dav.jianguoyun.com/dav/KaoyanRecitation');
-  const [webdavUser, setWebdavUser] = useState(settings.webdavUser || '');
-  const [webdavPassword, setWebdavPassword] = useState(settings.webdavPassword || '');
-
-  const [message, setMessage] = useState({ type: '', text: '' });
-
-  const handleSave = (e) => {
-    e.preventDefault();
-    onSaveSettings({
-      apiKey,
-      apiUrl,
-      apiModel,
-      webdavEnabled,
-      webdavUrl,
-      webdavUser,
-      webdavPassword
-    });
-    setMessage({ type: 'success', text: '设置保存成功！' });
-    setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-  };
-
-  const handleSync = async (direction) => {
-    if (!webdavEnabled || !webdavUrl || !webdavUser || !webdavPassword) {
-      setMessage({ type: 'error', text: '请先启用并填写完整的 WebDAV（坚果云）配置！' });
-      return;
-    }
-    
-    setMessage({ type: 'info', text: direction === 'pull' ? '正在从云端拉取同步...' : '正在上传同步至云端...' });
-    
+  const handleResetApp = async () => {
+    if (!(await window.customConfirm('🚨 危险警告：这会删除服务器上的所有题目和学习记录，重置为出厂状态！请问真的要执行重置操作吗？'))) return;
     try {
-      await onSyncCloud(direction);
-      setMessage({ 
-        type: 'success', 
-        text: direction === 'pull' 
-          ? '云端数据同步成功！本地背诵内容及遗忘曲线进度已更新。' 
-          : '成功同步至云端！现在您可在移动端或其他设备拉取最新进度。' 
-      });
+      const res = await fetch('/api/questions/clear', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setMessage('✅ 题库已成功重置！');
+        setTimeout(() => setMessage(''), 3000);
+      }
     } catch (err) {
-      console.error(err);
-      setMessage({ type: 'error', text: `同步失败: ${err.message}` });
+      await window.customAlert('重置失败: ' + err.message);
     }
   };
 
   return (
-    <div className="settings-container animate-fade">
+    <div className="settings-container animate-fade" style={{ maxWidth: '750px', margin: '0 auto' }}>
       <div className="section-title">
-        <span>⚙️ 系统设置与多端同步</span>
+        <span>⚙️ 系统配置说明</span>
       </div>
 
-      <div className="glass-panel settings-panel">
-        <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-          
-          {/* Message Alert */}
-          {message.text && (
-            <div 
-              className="glass-panel" 
-              style={{ 
-                padding: '0.75rem 1rem', 
-                fontSize: '0.85rem',
-                backgroundColor: message.type === 'success' ? 'rgba(16, 185, 129, 0.1)' : message.type === 'info' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                borderColor: message.type === 'success' ? 'var(--success)' : message.type === 'info' ? 'var(--info)' : 'var(--danger)',
-                color: message.type === 'success' ? 'var(--success)' : message.type === 'info' ? 'var(--info)' : 'var(--danger)'
-              }}
-            >
-              {message.type === 'success' ? '✅' : message.type === 'info' ? 'ℹ️' : '❌'} {message.text}
+      <div className="glass-panel" style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+        
+        {message && (
+          <div className="glass-panel" style={{ padding: '0.75rem 1rem', fontSize: '0.85rem', color: 'var(--success)', borderColor: 'var(--success)', backgroundColor: 'rgba(16, 185, 129, 0.05)' }}>
+            {message}
+          </div>
+        )}
+
+        {/* Secure key reminder */}
+        <div style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '1.5rem' }}>
+          <h3 style={{ fontSize: '1.1rem', color: 'var(--primary)', marginBottom: '0.5rem', fontFamily: 'var(--font-display)' }}>
+            🛡️ 安全性与模型配置
+          </h3>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: '1.6' }}>
+            根据考研背诵系统优化安全指标，<strong>大模型 API Key 及 API 端点现已安全托管于后端服务器的 <code>.env</code> 配置文件中</strong>。
+            前台不保存任何隐私凭证，有效防范泄密。
+          </p>
+          <div style={{ marginTop: '0.75rem', padding: '0.75rem', background: 'rgba(0,0,0,0.15)', border: '1px solid var(--border-color)', borderRadius: '6px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+            提示：如需修改大模型参数，请在服务器端的 <code>.env</code> 文件中修改 <code>AI_API_KEY</code>、<code>AI_API_URL</code> 和 <code>AI_API_MODEL</code>。
+          </div>
+        </div>
+
+        {/* Leitner rules info */}
+        <div style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '1.5rem' }}>
+          <h3 style={{ fontSize: '1.1rem', color: 'var(--secondary)', marginBottom: '0.5rem', fontFamily: 'var(--font-display)' }}>
+            🧠 Spaced Repetition (间隔重复) 调度机制
+          </h3>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: '1.6', marginBottom: '0.5rem' }}>
+            系统整合了“主动回忆测试打分”与“卡片自评”双重复习时间计算模型：
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', fontSize: '0.8rem' }}>
+            <div style={{ padding: '0.75rem', background: 'rgba(0,d2,ff,0.03)', border: '1px solid rgba(0,d2,ff,0.1)', borderRadius: '6px' }}>
+              <strong style={{ color: 'var(--primary)', display: 'block', marginBottom: '0.3rem' }}>📝 主动回忆打分触发规则：</strong>
+              <ul style={{ paddingLeft: '1.2rem', lineHeight: '1.5', color: 'var(--text-secondary)' }}>
+                <li>低于 5 分：<strong>第 1 天复习</strong>，掌握度下降</li>
+                <li>5 - 7 分：<strong>第 3 天复习</strong></li>
+                <li>8 - 9 分：<strong>第 7 天复习</strong></li>
+                <li>10 分：<strong>第 15 天复习</strong></li>
+              </ul>
             </div>
-          )}
-
-          {/* AI Settings Section */}
-          <div style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
-            <h4 style={{ fontFamily: 'var(--font-display)', color: 'var(--primary)', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span>🤖 AI 智能同义词打分配置</span>
-            </h4>
-
-            <div className="settings-row">
-              <label style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-secondary)' }}>API Key</label>
-              <input
-                className="form-input-text"
-                type="password"
-                placeholder="请输入您的 OpenAI 兼容 API Key (tp-...)"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-              />
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                您提供的 Token 已预填。如使用小米 Mimo Token Plan 亦使用此配置。
-              </span>
-            </div>
-
-            <div className="settings-row">
-              <label style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-secondary)' }}>API 接口地址 (Base URL)</label>
-              <input
-                className="form-input-text"
-                type="text"
-                placeholder="https://api.siliconflow.cn/v1"
-                value={apiUrl}
-                onChange={(e) => setApiUrl(e.target.value)}
-              />
-            </div>
-
-            <div className="settings-row">
-              <label style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-secondary)' }}>评分模型名称 (Model Name)</label>
-              <input
-                className="form-input-text"
-                type="text"
-                placeholder="Qwen/Qwen2.5-7B-Instruct"
-                value={apiModel}
-                onChange={(e) => setApiModel(e.target.value)}
-              />
+            <div style={{ padding: '0.75rem', background: 'rgba(139,92,246,0.03)', border: '1px solid rgba(139,92,246,0.1)', borderRadius: '6px' }}>
+              <strong style={{ color: 'var(--secondary)', display: 'block', marginBottom: '0.3rem' }}>📖 卡片自评触发规则：</strong>
+              <ul style={{ paddingLeft: '1.2rem', lineHeight: '1.5', color: 'var(--text-secondary)' }}>
+                <li>忘记：<strong>第 1 天复习</strong></li>
+                <li>困难：<strong>第 2 天复习</strong></li>
+                <li>良好：<strong>第 5 天复习</strong></li>
+                <li>简单：<strong>第 12 天复习</strong></li>
+              </ul>
             </div>
           </div>
+        </div>
 
-          {/* Cloud Sync Section */}
-          <div>
-            <div className="settings-row-horizontal">
-              <h4 style={{ fontFamily: 'var(--font-display)', color: 'var(--secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span>☁️ 坚果云多端云同步 (WebDAV)</span>
-              </h4>
-              <label className="switch">
-                <input 
-                  type="checkbox" 
-                  checked={webdavEnabled} 
-                  onChange={(e) => setWebdavEnabled(e.target.checked)} 
-                />
-                <span className="slider"></span>
-              </label>
-            </div>
-            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
-              启用后，背诵进度与修改后的知识库可通过坚果云同步，使 iPad/iPhone 访问相同网页即可读取最新内容。
-            </p>
+        {/* Sync concept description */}
+        <div style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '1.5rem' }}>
+          <h3 style={{ fontSize: '1.1rem', color: 'var(--success)', marginBottom: '0.5rem', fontFamily: 'var(--font-display)' }}>
+            ☁️ 多端数据实时同步
+          </h3>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: '1.6' }}>
+            当前系统已完成以<strong>数据库为主数据源</strong>的重构。
+            所有端（PC 浏览器、iPad/手机浏览器）均实时通过后端 API 查询并更新数据库。
+            无论在哪个设备上作答，数据均能保持秒级同步。
+          </p>
+        </div>
 
-            {webdavEnabled && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', background: 'rgba(0, 0, 0, 0.15)', padding: '1rem', borderRadius: '8px', border: '1px solid var(--border-color)', marginBottom: '1rem' }}>
-                <div className="settings-row">
-                  <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>坚果云 WebDAV 地址</label>
-                  <input
-                    className="form-input-text"
-                    type="text"
-                    value={webdavUrl}
-                    onChange={(e) => setWebdavUrl(e.target.value)}
-                  />
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                    建议在坚果云中创建一个文件夹（例如：KaoyanRecitation）
-                  </span>
-                </div>
+        {/* Dangerous tools */}
+        <div>
+          <h3 style={{ fontSize: '1.1rem', color: 'var(--danger)', marginBottom: '0.5rem', fontFamily: 'var(--font-display)' }}>
+            ⚠️ 数据维护与重置
+          </h3>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1rem' }}>
+            如果您需要将数据库清空，或重新导入全部资料大纲，可使用重置工具：
+          </p>
+          <button 
+            type="button" 
+            className="text-btn" 
+            onClick={handleResetApp}
+            style={{ color: 'var(--danger)', borderColor: 'rgba(239, 68, 68, 0.3)', padding: '0.5rem 1.5rem', fontSize: '0.85rem' }}
+          >
+            🚨 彻底清空并重置整个系统
+          </button>
+        </div>
 
-                <div className="settings-row">
-                  <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>坚果云账号 (邮箱)</label>
-                  <input
-                    className="form-input-text"
-                    type="email"
-                    placeholder="example@email.com"
-                    value={webdavUser}
-                    onChange={(e) => setWebdavUser(e.target.value)}
-                  />
-                </div>
-
-                <div className="settings-row">
-                  <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>坚果云应用密码 (非登录密码)</label>
-                  <input
-                    className="form-input-text"
-                    type="password"
-                    placeholder="请输入坚果云后台生成的 WebDAV 应用密码"
-                    value={webdavPassword}
-                    onChange={(e) => setWebdavPassword(e.target.value)}
-                  />
-                </div>
-
-                <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
-                  <button
-                    type="button"
-                    className="text-btn"
-                    onClick={() => handleSync('pull')}
-                    disabled={isSyncing}
-                    style={{ flex: 1 }}
-                  >
-                    ⬇️ 从云端拉取同步
-                  </button>
-                  <button
-                    type="button"
-                    className="text-btn"
-                    onClick={() => handleSync('push')}
-                    disabled={isSyncing}
-                    style={{ flex: 1 }}
-                  >
-                    ⬆️ 同步保存至云端
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1rem' }}>
-            <button type="submit" className="text-btn primary-btn" style={{ width: '120px', display: 'flex', justifyContent: 'center' }}>
-              保存设置
-            </button>
-          </div>
-        </form>
       </div>
     </div>
   );

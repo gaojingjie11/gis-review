@@ -1,41 +1,57 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
-export default function Dashboard({ recitationData, progress, onNavigate }) {
-  // Calculations
-  const allItems = recitationData.flatMap(g => g.items) || [];
-  const totalConcepts = allItems.reduce((acc, item) => acc + (item.points ? item.points.length : 0), 0);
-  
-  const cardStatus = progress?.cardStatus || {};
-  
-  // Leitner Boxes counts
-  const boxCounts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-  let masteredCount = 0;
-  let inProgressCount = 0;
-  
-  allItems.forEach(item => {
-    if (item.points) {
-      item.points.forEach(p => {
-        const status = cardStatus[p.id];
-        if (status) {
-          const box = status.box || 1;
-          boxCounts[box] = (boxCounts[box] || 0) + 1;
-          if (box >= 4) {
-            masteredCount++;
-          } else {
-            inProgressCount++;
-          }
-        }
-      });
+export default function Dashboard({ onNavigate }) {
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchDashboardStats();
+  }, []);
+
+  const fetchDashboardStats = async () => {
+    try {
+      const res = await fetch('/api/statistics');
+      const data = await res.json();
+      if (data.success) {
+        setStats(data.data);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
     }
-  });
+  };
 
-  const unlearnedCount = totalConcepts - (masteredCount + inProgressCount);
-  const masteredPercentage = totalConcepts > 0 ? Math.round((masteredCount / totalConcepts) * 100) : 0;
-  
+  // Calculate countdown to KAO YAN (postgraduate entrance exam) - typical date is Dec 20, 2026
+  const getExamCountdown = () => {
+    const examDate = new Date('2026-12-20T00:00:00');
+    const now = new Date();
+    const diff = examDate - now;
+    if (diff <= 0) return 0;
+    return Math.ceil(diff / (1000 * 60 * 60 * 24));
+  };
+
+  if (loading) {
+    return (
+      <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
+        <div className="spinner"></div>
+        <p style={{ marginTop: '1rem' }}>正在加载你的复习大盘状态...</p>
+      </div>
+    );
+  }
+
+  if (!stats) return null;
+
+  const total = stats.totalQuestions || 1;
+  const masteredCount = (stats.levelDistribution[4] || 0) + (stats.levelDistribution[5] || 0);
+  const masteredPercentage = Math.round((masteredCount / total) * 100);
+
   // Circle progress calculation
   const radius = 50;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (masteredPercentage / 100) * circumference;
+
+  const countdown = getExamCountdown();
 
   return (
     <div className="dashboard-view animate-fade">
@@ -45,59 +61,71 @@ export default function Dashboard({ recitationData, progress, onNavigate }) {
       
       <div className="dashboard-grid">
         {/* Left Side: Stats and Info */}
-        <div className="glass-panel" style={{ padding: '1.5rem' }}>
-          <div className="stats-row">
-            <div className="glass-panel stat-card primary-stat">
-              <div className="stat-label">总概念数</div>
-              <div className="stat-number">{totalConcepts}</div>
+        <div className="glass-panel" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          
+          {/* Main counts */}
+          <div className="stats-row" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem' }}>
+            <div className="glass-panel stat-card primary-stat" style={{ padding: '0.75rem' }}>
+              <div className="stat-label">总知识数</div>
+              <div className="stat-number" style={{ fontSize: '1.5rem' }}>{stats.totalQuestions}</div>
             </div>
-            <div className="glass-panel stat-card">
-              <div className="stat-label">已掌握 (Box 4-5)</div>
-              <div className="stat-number" style={{ color: 'var(--success)' }}>{masteredCount}</div>
+            <div className="glass-panel stat-card" style={{ padding: '0.75rem' }}>
+              <div className="stat-label">待复习题</div>
+              <div className="stat-number" style={{ color: 'var(--warning)', fontSize: '1.5rem' }}>{stats.remainingReviewsToday}</div>
             </div>
-            <div className="glass-panel stat-card">
-              <div className="stat-label">学习中 (Box 1-3)</div>
-              <div className="stat-number" style={{ color: 'var(--primary)' }}>{inProgressCount}</div>
+            <div className="glass-panel stat-card" style={{ padding: '0.75rem' }}>
+              <div className="stat-label">今日完成</div>
+              <div className="stat-number" style={{ color: 'var(--success)', fontSize: '1.5rem' }}>{stats.completedToday}</div>
             </div>
-            <div className="glass-panel stat-card">
-              <div className="stat-label">未学习</div>
-              <div className="stat-number" style={{ color: 'var(--text-muted)' }}>{unlearnedCount}</div>
+            <div className="glass-panel stat-card" style={{ padding: '0.75rem' }}>
+              <div className="stat-label">已背诵</div>
+              <div className="stat-number" style={{ color: 'var(--primary)', fontSize: '1.5rem' }}>{stats.learnedQuestions}</div>
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '2rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Progress Circular & Exam Countdown */}
+          <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            
             {/* Progress Circular */}
-            <div className="progress-container glass-panel" style={{ position: 'relative', width: '180px', height: '180px' }}>
-              <svg className="progress-circle-svg" width="140" height="140">
+            <div className="progress-container glass-panel" style={{ position: 'relative', width: '150px', height: '150px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+              <svg className="progress-circle-svg" width="120" height="120" style={{ transform: 'rotate(-90deg)' }}>
                 <defs>
                   <linearGradient id="cyan-violet-grad" x1="0%" y1="0%" x2="100%" y2="100%">
                     <stop offset="0%" stopColor="var(--primary)" />
                     <stop offset="100%" stopColor="var(--secondary)" />
                   </linearGradient>
                 </defs>
-                <circle className="progress-circle-bg" cx="70" cy="70" r={radius} strokeWidth="10" />
+                <circle className="progress-circle-bg" cx="60" cy="60" r={radius} strokeWidth="8" style={{ fill: 'none', stroke: 'rgba(255,255,255,0.03)' }} />
                 <circle 
                   className="progress-circle-bar" 
-                  cx="70" 
-                  cy="70" 
+                  cx="60" 
+                  cy="60" 
                   r={radius} 
-                  strokeWidth="10" 
+                  strokeWidth="8" 
                   strokeDasharray={circumference}
                   strokeDashoffset={strokeDashoffset}
+                  style={{ fill: 'none', stroke: 'url(#cyan-violet-grad)', transition: 'stroke-dashoffset 0.5s ease' }}
                 />
               </svg>
-              <div className="progress-text-overlay">
-                <span className="progress-percentage">{masteredPercentage}%</span>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>掌握率</span>
+              <div className="progress-text-overlay" style={{ position: 'absolute', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <span className="progress-percentage" style={{ fontSize: '1.5rem', fontWeight: '800', fontFamily: 'var(--font-display)' }}>{masteredPercentage}%</span>
+                <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>掌握率 (Box 4-5)</span>
               </div>
             </div>
 
-            {/* Explanatory notes */}
-            <div style={{ flex: 1, minWidth: '200px' }}>
-              <h3 style={{ fontFamily: 'var(--font-display)', marginBottom: '0.5rem' }}>考研倒计时复习</h3>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: '1.5' }}>
-                本系统基于<strong>莱特纳 (Leitner) 卡片盒系统</strong>，通过记忆反馈自动为您安排复习频率。
-                建议每天完成“检测模式”以评估弱项，并利用“语音带背”加深磨平记忆。
+            {/* Countdown and info */}
+            <div style={{ flex: 1, minWidth: '180px' }}>
+              <h3 style={{ fontFamily: 'var(--font-display)', marginBottom: '0.3rem', fontSize: '1.1rem' }}>
+                📅 2026 考研冲刺倒计时
+              </h3>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.3rem' }}>
+                <span style={{ fontSize: '2.5rem', fontWeight: '900', color: countdown < 50 ? 'var(--danger)' : 'var(--primary)', fontFamily: 'var(--font-display)' }}>
+                  {countdown}
+                </span>
+                <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>天</span>
+              </div>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', lineHeight: '1.4', marginTop: '0.2rem' }}>
+                考研非一日之功，利用系统安排好的间隔重复算法，磨平你的专业课核心弱点，稳定提升作答均分！
               </p>
             </div>
           </div>
@@ -105,56 +133,78 @@ export default function Dashboard({ recitationData, progress, onNavigate }) {
 
         {/* Right Side: Quick Actions & Boxes */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <div className="glass-panel quick-start-panel">
-            <div className="section-title" style={{ fontSize: '1.1rem', marginBottom: '1rem' }}>
-              <span>⚡ 快速开始</span>
+          
+          {/* Quick Actions */}
+          <div className="glass-panel quick-start-panel" style={{ padding: '1rem' }}>
+            <div className="section-title" style={{ fontSize: '1rem', marginBottom: '0.75rem' }}>
+              <span>⚡ 学习导航</span>
             </div>
-            <div className="quick-actions-list">
-              <button className="action-btn-large" onClick={() => onNavigate('recite')}>
-                <div className="action-icon-wrapper">📖</div>
-                <div className="action-details">
-                  <h4>进入背诵模式</h4>
-                  <p>卡片翻转自评、关键词遮罩、TTS语音带背</p>
+            <div className="quick-actions-list" style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+              
+              <button className="action-btn-large" onClick={() => onNavigate('today-review')} style={{ padding: '0.6rem' }}>
+                <div className="action-icon-wrapper" style={{ fontSize: '1.25rem' }}>🚀</div>
+                <div className="action-details" style={{ textAlign: 'left' }}>
+                  <h4 style={{ fontSize: '0.9rem', fontWeight: '600' }}>进入今日复习 (主动回忆)</h4>
+                  <p style={{ fontSize: '0.75rem' }}>标准题目显示、大模型语义阅卷打分、显示得分点缺陷</p>
                 </div>
               </button>
               
-              <button className="action-btn-large" onClick={() => onNavigate('test')}>
-                <div className="action-icon-wrapper">📝</div>
-                <div className="action-details">
-                  <h4>进入检测模式</h4>
-                  <p>挖空填空、AI 语义评分概念默写</p>
+              <button className="action-btn-large" onClick={() => onNavigate('recite')} style={{ padding: '0.6rem' }}>
+                <div className="action-icon-wrapper" style={{ fontSize: '1.25rem' }}>📖</div>
+                <div className="action-details" style={{ textAlign: 'left' }}>
+                  <h4 style={{ fontSize: '0.9rem', fontWeight: '600' }}>进入卡片背诵 (概念自评)</h4>
+                  <p style={{ fontSize: '0.75rem' }}>卡片翻转自评、关键词隐藏遮罩、TTS 语音带背模式</p>
                 </div>
               </button>
 
-              <button className="action-btn-large" onClick={() => onNavigate('editor')}>
-                <div className="action-icon-wrapper">⚙️</div>
-                <div className="action-details">
-                  <h4>管理知识库</h4>
-                  <p>编辑每日背诵词条，直接修改本地文件</p>
+              <button className="action-btn-large" onClick={() => onNavigate('stats')} style={{ padding: '0.6rem' }}>
+                <div className="action-icon-wrapper" style={{ fontSize: '1.25rem' }}>🔍</div>
+                <div className="action-details" style={{ textAlign: 'left' }}>
+                  <h4 style={{ fontSize: '0.9rem', fontWeight: '600' }}>查看盲区与弱点分析</h4>
+                  <p style={{ fontSize: '0.75rem' }}>高频错误考点追踪、学习统计趋势、最薄弱模块分析</p>
+                </div>
+              </button>
+
+              <button className="action-btn-large" onClick={() => onNavigate('editor')} style={{ padding: '0.6rem' }}>
+                <div className="action-icon-wrapper" style={{ fontSize: '1.25rem' }}>✏️</div>
+                <div className="action-details" style={{ textAlign: 'left' }}>
+                  <h4 style={{ fontSize: '0.9rem', fontWeight: '600' }}>管理专业课知识库</h4>
+                  <p style={{ fontSize: '0.75rem' }}>新增及编辑题目、导入大纲 Markdown/JSON、导出数据</p>
                 </div>
               </button>
             </div>
           </div>
 
           {/* Leitner Box details */}
-          <div className="glass-panel leitner-status-panel">
-            <div className="section-title" style={{ fontSize: '1.1rem', marginBottom: '1rem' }}>
-              <span>📦 记忆卡片盒分布</span>
+          <div className="glass-panel leitner-status-panel" style={{ padding: '1rem' }}>
+            <div className="section-title" style={{ fontSize: '1rem', marginBottom: '0.75rem' }}>
+              <span>📦 记忆盒子卡片分布</span>
             </div>
-            <div className="leitner-boxes-list">
+            <div className="leitner-boxes-list" style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
               {[
-                { box: 1, name: '卡片盒 1 (每天复习)', color: 'var(--danger)' },
-                { box: 2, name: '卡片盒 2 (每2天复习)', color: 'var(--warning)' },
-                { box: 3, name: '卡片盒 3 (每4天复习)', color: 'var(--info)' },
-                { box: 4, name: '卡片盒 4 (每7天复习)', color: 'var(--success)' },
-                { box: 5, name: '卡片盒 5 (已完全掌握)', color: 'var(--secondary)' },
+                { box: 1, name: 'Box 1 (每天复习 - 完全不会)', count: stats.levelDistribution[1] || 0, color: 'var(--danger)' },
+                { box: 2, name: 'Box 2 (每2天复习 - 模糊印象)', count: stats.levelDistribution[2] || 0, color: 'var(--warning)' },
+                { box: 3, name: 'Box 3 (每4天复习 - 基本会)', count: stats.levelDistribution[3] || 0, color: 'var(--info)' },
+                { box: 4, name: 'Box 4 (每7天复习 - 熟练掌握)', count: stats.levelDistribution[4] || 0, color: 'var(--success)' },
+                { box: 5, name: 'Box 5 (已完全掌握 - 长期熟记)', count: stats.levelDistribution[5] || 0, color: 'var(--secondary)' },
               ].map(b => (
-                <div key={b.box} className={`leitner-box-item ${boxCounts[b.box] > 0 ? 'active-box' : ''}`}>
-                  <div className="leitner-box-info">
-                    <span className="leitner-box-num" style={boxCounts[b.box] > 0 ? { backgroundColor: b.color } : {}}>{b.box}</span>
+                <div key={b.box} className={`leitner-box-item ${b.count > 0 ? 'active-box' : ''}`} style={{ padding: '0.4rem 0.5rem', fontSize: '0.8rem' }}>
+                  <div className="leitner-box-info" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span className="leitner-box-num" style={{ 
+                      backgroundColor: b.count > 0 ? b.color : 'rgba(255,255,255,0.03)',
+                      color: b.count > 0 ? '#fff' : 'var(--text-muted)',
+                      width: '20px',
+                      height: '20px',
+                      borderRadius: '4px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '0.75rem',
+                      fontWeight: '700'
+                    }}>{b.box}</span>
                     <span className="leitner-box-name">{b.name}</span>
                   </div>
-                  <span className="leitner-box-count">{boxCounts[b.box] || 0} 个</span>
+                  <span className="leitner-box-count">{b.count} 个</span>
                 </div>
               ))}
             </div>

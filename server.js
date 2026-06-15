@@ -1,8 +1,25 @@
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
+import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  initDb,
+  query,
+  getQuestions,
+  getQuestion,
+  createQuestion,
+  updateQuestion,
+  deleteQuestion,
+  getTodayReviews,
+  saveGrade,
+  rateCard,
+  getStatistics,
+  clearAllTables
+} from './db.js';
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,296 +27,756 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Resolve paths
-const MD_FILE_PATH = path.resolve('D:/考研/专业课每日背诵/近期专业课每日背诵汇总.md');
-const PROGRESS_FILE_PATH = path.resolve('D:/考研/专业课每日背诵/recitation_progress.json');
-
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
-// Helper: Backup file before write
-function backupFile(filePath) {
-  if (fs.existsSync(filePath)) {
-    const dir = path.dirname(filePath);
-    const ext = path.extname(filePath);
-    const base = path.basename(filePath, ext);
-    const backupPath = path.join(dir, `${base}.bak${ext}`);
-    fs.copyFileSync(filePath, backupPath);
+// Helper: Call LLM API securely
+async function callLLM(systemPrompt, userPrompt) {
+  const apiKey = process.env.AI_API_KEY;
+  const apiUrl = process.env.AI_API_URL || 'https://api.openai.com/v1';
+  const model = process.env.AI_API_MODEL || 'gpt-4o-mini';
+  const temperature = parseFloat(process.env.AI_TEMPERATURE || '0.2');
+
+  if (!apiKey) {
+    throw new Error('AI_API_KEY is not configured in the server environment.');
+  }
+
+  const response = await fetch(`${apiUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      temperature,
+      response_format: { type: "json_object" }
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`AI Provider HTTP Error: ${response.status} ${response.statusText} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  if (data.error) {
+    throw new Error(data.error.message || 'LLM API error');
+  }
+
+  return data.choices[0].message.content;
+}
+
+// Helper: Auto-split standard answer into score points using AI
+async function aiSplitScorePoints(question, standardAnswer) {
+  try {
+    const systemPrompt = `你是一位专业的考研专业课辅导老师。请根据给出的题目和标准答案，拆分出3至6个清晰、独立的判定得分点（Score Points）。
+这些得分点是判卷时必须看到的关键核心信息或得分关键词。
+你必须输出且仅输出一个合法的 JSON 格式对象，结构如下：
+{
+  "score_points": ["得分点1详细描述", "得分点2详细描述", "得分点3详细描述"]
+}
+不要有任何 Markdown 包裹（不要 \`\`\`json），直接输出 JSON 内容。`;
+    const userPrompt = `题目：${question}\n标准答案：${standardAnswer}`;
+    
+    const resText = await callLLM(systemPrompt, userPrompt);
+    const parsed = JSON.parse(resText.trim());
+    return parsed.score_points || [];
+  } catch (error) {
+    console.warn('AI score points split failed, falling back to sentence split:', error.message);
+    // Simple sentence split fallback
+    return standardAnswer
+      .split(/[。！；;!?\n]/)
+      .map(s => s.trim())
+      .filter(s => s.length > 8);
   }
 }
 
-// Markdown parsing engine
-function parseMarkdown(filePath) {
-  if (!fs.existsSync(filePath)) {
-    return [];
+// ----------------------------------------------------------------
+// API ROUTES
+// ----------------------------------------------------------------
+
+// 1. Get Questions list (with filtering)
+app.get('/api/questions', async (req, res) => {
+  try {
+    const filters = {
+      subject: req.query.subject,
+      chapter: req.query.chapter,
+      type: req.query.type,
+      search: req.query.search
+    };
+    const data = await getQuestions(filters);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 2. Get Question Details
+app.get('/api/questions/:id', async (req, res) => {
+  try {
+    const data = await getQuestion(parseInt(req.params.id));
+    if (!data) {
+      return res.status(404).json({ success: false, message: 'Question not found' });
+    }
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 3. Create Question
+app.post('/api/questions', async (req, res) => {
+  try {
+    const q = req.body;
+    
+    // Auto-populating default values for backward compatibility
+    if (!q.full_answer && q.standard_answer) q.full_answer = q.standard_answer;
+    if (!q.cloze_answer && q.standard_answer) q.cloze_answer = q.standard_answer;
+    if (!q.short_answer && q.standard_answer) q.short_answer = q.standard_answer;
+    
+    if (!q.cloze_answer) q.cloze_answer = q.question || '';
+    if (!q.short_answer) q.short_answer = q.question || '';
+    if (!q.full_answer) q.full_answer = q.question || '';
+    
+    if (!q.cloze_keywords || q.cloze_keywords.length === 0) {
+      const keywords = [];
+      const regex = /\*\*(.*?)\*\*/g;
+      let match;
+      while ((match = regex.exec(q.cloze_answer)) !== null) {
+        const kw = match[1].trim();
+        if (kw && !keywords.includes(kw)) {
+          keywords.push(kw);
+        }
+      }
+      q.cloze_keywords = keywords;
+    }
+
+    if (!q.short_score_points || q.short_score_points.length === 0) {
+      q.short_score_points = q.short_answer.split(/[。！；;!?\n]/).map(s => s.trim()).filter(s => s.length > 4);
+    }
+    if (!q.full_score_points || q.full_score_points.length === 0) {
+      q.full_score_points = q.full_answer.split(/[。！；;!?\n]/).map(s => s.trim()).filter(s => s.length > 4);
+    }
+
+    const questionId = await createQuestion(q);
+    res.json({ success: true, message: 'Question created successfully', questionId });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 4. Update Question
+app.put('/api/questions/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await updateQuestion(id, req.body);
+    res.json({ success: true, message: 'Question updated successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 5. Delete Question
+app.delete('/api/questions/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await deleteQuestion(id);
+    res.json({ success: true, message: 'Question deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 6. Get Spaced Repetition Study Queue
+app.get('/api/today-reviews', async (req, res) => {
+  try {
+    const data = await getTodayReviews();
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 7. Secure AI Grading API with DB History Logging (Combined Grading)
+app.post('/api/ai/grade', async (req, res) => {
+  try {
+    const { questionId, clozeScore, clozeAnswers, shortAnswerInput, fullAnswerInput } = req.body;
+
+    if (!questionId) {
+      return res.status(400).json({ success: false, message: 'questionId is required' });
+    }
+
+    // Retrieve question data
+    const questionData = await getQuestion(parseInt(questionId));
+    if (!questionData) {
+      return res.status(404).json({ success: false, message: 'Question not found' });
+    }
+
+    const clozeGrade = parseFloat(clozeScore !== undefined ? clozeScore : 0);
+
+    let gradingResult;
+
+    // Call AI if enabled, otherwise fallback to local keyword matching
+    if (process.env.AI_API_KEY && process.env.ENABLE_AI_GRADING !== 'false') {
+      try {
+        const systemPrompt = `你是一位专业的考研专业课阅卷教师。你需要同时对【简答题部分】和【论述题部分】的学生作答进行评审和评分（0-10分制，评分必须为整数）。
+
+简答题评分原则：
+- 重在框架与核心类别：学生作答时，主要大类（框架、主要分类、核心论点）对得上，且大类后稍微跟有一句合理的简短解释即可得分。
+- 解释句的文字表述不需要和标准答案逐字一致，意思正确即可。
+
+论述题评分原则（较为严格）：
+- 强调全面性与论述深度：学生必须尽可能答出标准答案的所有核心要点和组成部分。
+- 细节比对：深入对比标准答案的全部细节展开，漏掉重要逻辑步骤或展开不够全面都要扣分。
+
+你必须输出且仅输出一个合法的 JSON 格式对象，结构如下：
+{
+  "short_evaluation": {
+    "score": 8,
+    "full_score": 10,
+    "level": "基本掌握",
+    "covered_points": ["对上的第1个大类框架", "对上的第2个大类框架"],
+    "missing_points": ["漏掉的第1个大类框架", "漏掉的第2个大类框架"],
+    "wrong_points": ["表述不准确或概念混淆的内容"],
+    "suggestion": "关于简答题框架与要点的改进建议",
+    "exam_comment": "简答题短评，字数在100字以内"
+  },
+  "full_evaluation": {
+    "score": 7,
+    "full_score": 10,
+    "level": "基本掌握",
+    "covered_points": ["细节阐述充分的第1个要点", "细节阐述充分的第2个要点"],
+    "missing_points": ["遗漏或阐述过于简略的第1个要点", "遗漏或阐述过于简略的第2个要点"],
+    "wrong_points": ["表述错误、概念偏离或存在逻辑漏洞的内容"],
+    "suggestion": "关于论述题深度、论证逻辑或补充细节的改进建议",
+    "exam_comment": "论述题深度短评，字数在100字以内"
+  }
+}
+不要有任何 Markdown 包裹（不要用 \`\`\`json 或者是 \`\`\`），直接输出 JSON 内容。`;
+
+        const userPrompt = `题目：${questionData.question}
+
+【简答题标准参考答案】：
+${questionData.short_answer}
+【简答题要点得分点】：
+${JSON.stringify(questionData.short_score_points || [])}
+
+【论述题标准参考答案】：
+${questionData.full_answer}
+【论述题细节得分点】：
+${JSON.stringify(questionData.full_score_points || [])}
+
+--------------------
+【学生作答简答题】：
+"${shortAnswerInput || '（学生未作答）'}"
+
+【学生作答论述题】：
+"${fullAnswerInput || '（学生未作答）'}"`;
+
+        const aiText = await callLLM(systemPrompt, userPrompt);
+        gradingResult = JSON.parse(aiText.trim());
+      } catch (err) {
+        console.error('LLM API call failed, falling back to local grader:', err);
+        gradingResult = runLocalTriFallbackGrader(shortAnswerInput, fullAnswerInput, questionData);
+      }
+    } else {
+      // Fallback
+      gradingResult = runLocalTriFallbackGrader(shortAnswerInput, fullAnswerInput, questionData);
+    }
+
+    const shortScore = gradingResult.short_evaluation?.score !== undefined ? gradingResult.short_evaluation.score : 0;
+    const fullScore = gradingResult.full_evaluation?.score !== undefined ? gradingResult.full_evaluation.score : 0;
+
+    // Calculate total score based on weights: Cloze 20%, Short Answer 35%, Essay (Full) 45%
+    const totalScore = parseFloat(((clozeGrade * 0.20) + (shortScore * 0.35) + (fullScore * 0.45)).toFixed(2));
+
+    const scores = {
+      clozeScore: clozeGrade,
+      shortScore,
+      fullScore,
+      totalScore
+    };
+
+    const inputs = {
+      clozeAnswers,
+      shortAnswerInput,
+      fullAnswerInput
+    };
+
+    // Save attempt and update database review states
+    await saveGrade(questionId, scores, inputs, gradingResult);
+
+    res.json({
+      success: true,
+      data: {
+        clozeScore: clozeGrade,
+        shortScore,
+        fullScore,
+        totalScore,
+        short_evaluation: gradingResult.short_evaluation,
+        full_evaluation: gradingResult.full_evaluation
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Helper: Local scoring fallback for both short and full answers
+function runLocalTriFallbackGrader(shortAnswerInput, fullAnswerInput, questionData) {
+  const shortPoints = questionData.short_score_points || [];
+  const fullPoints = questionData.full_score_points || [];
+  
+  const shortGrading = runLocalSingleGrader(shortAnswerInput, shortPoints, "简答题");
+  const fullGrading = runLocalSingleGrader(fullAnswerInput, fullPoints, "论述题");
+  
+  return {
+    short_evaluation: shortGrading,
+    full_evaluation: fullGrading
+  };
+}
+
+function runLocalSingleGrader(input, points, modeName) {
+  const cleanInput = (input || '').toLowerCase().trim();
+  if (!cleanInput) {
+    return {
+      score: 0,
+      full_score: 10,
+      level: "完全不会",
+      covered_points: [],
+      missing_points: points,
+      wrong_points: ["作答为空"],
+      suggestion: "请认真书写答案后再提交评分。",
+      exam_comment: `[本地评分] 未检测到您的${modeName}作答内容。`
+    };
   }
   
-  const content = fs.readFileSync(filePath, 'utf-8');
-  const lines = content.split(/\r?\n/);
-  const result = [];
+  const matches = [];
+  const misses = [];
   
-  let currentGroup = null;
-  let currentItem = null;
-  let globalItemIndex = 1;
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    
-    // Parse Date Group: e.g. ## 📅 6月12日背诵内容：地理信息系统基础理论
-    if (line.startsWith('## ')) {
-      const title = line.replace(/^##\s*(📅)?\s*/, '').trim();
-      currentGroup = {
-        date: title,
-        items: []
-      };
-      result.push(currentGroup);
-      currentItem = null;
-      continue;
+  points.forEach(point => {
+    const cleanedPoint = point.toLowerCase();
+    const subsegments = cleanedPoint.split(/[,，().（）]/).filter(s => s.trim().length > 3);
+    const matched = subsegments.length > 0 
+      ? subsegments.some(sub => cleanInput.includes(sub.trim())) 
+      : cleanInput.includes(cleanedPoint);
+      
+    if (matched) {
+      matches.push(point);
+    } else {
+      misses.push(point);
     }
-    
-    // Parse Item: e.g. ### 1. 地理数据和地理信息
-    if (line.startsWith('### ')) {
-      const rawTitle = line.replace('### ', '').trim();
-      const match = rawTitle.match(/^(\d+)\.\s*(.*)/);
-      const id = match ? parseInt(match[1]) : globalItemIndex;
-      const title = match ? match[2] : rawTitle;
-      
-      currentItem = {
-        id: id,
-        title: title,
-        rawContent: [],
-        points: []
-      };
-      
-      globalItemIndex = id + 1;
-      
-      if (currentGroup) {
-        currentGroup.items.push(currentItem);
-      } else {
-        currentGroup = { date: "未分类", items: [currentItem] };
-        result.push(currentGroup);
+  });
+  
+  const scoreRatio = points.length > 0 ? (matches.length / points.length) : 0.5;
+  const score = Math.round(scoreRatio * 10);
+  
+  let level = "完全不会";
+  if (score >= 9) level = "熟练掌握";
+  else if (score >= 7) level = "基本掌握";
+  else if (score >= 5) level = "模糊印象";
+  else if (score >= 2) level = "稍微了解";
+  
+  return {
+    score,
+    full_score: 10,
+    level,
+    covered_points: matches,
+    missing_points: misses,
+    wrong_points: [],
+    suggestion: `[本地评分] 下次请重点关注：${misses.slice(0, 2).join('; ')}`,
+    exam_comment: `[本地评分] 答出 ${matches.length}/${points.length} 个关键得分点。`
+  };
+}
+
+// 8. Leitner self-rating rating sync
+app.post('/api/cards/rate', async (req, res) => {
+  try {
+    const { questionId, rating } = req.body;
+    if (!questionId || !rating) {
+      return res.status(400).json({ success: false, message: 'questionId and rating are required' });
+    }
+    await rateCard(parseInt(questionId), rating);
+    res.json({ success: true, message: 'Card rating saved successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 8.5. Save Cloze test results (Keep route for compatibility)
+app.post('/api/cloze/grade', async (req, res) => {
+  try {
+    const { questionId, score, answers, result } = req.body;
+    if (!questionId || score === undefined || !result) {
+      return res.status(400).json({ success: false, message: 'questionId, score, and result are required' });
+    }
+    const userAnswer = `[填空自测] 答案记录: ${JSON.stringify(answers)}`;
+    const scores = {
+      clozeScore: score,
+      shortScore: score,
+      fullScore: score,
+      totalScore: score
+    };
+    const inputs = {
+      clozeAnswers: answers,
+      shortAnswerInput: userAnswer,
+      fullAnswerInput: userAnswer
+    };
+    await saveGrade(parseInt(questionId), scores, inputs, { result });
+    res.json({ success: true, message: 'Cloze test result saved successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 9. Get Statistics & Weakness reports
+app.get('/api/statistics', async (req, res) => {
+  try {
+    const stats = await getStatistics();
+    res.json({ success: true, data: stats });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 10. Admin: Import questions from Markdown / JSON
+app.post('/api/questions/import', async (req, res) => {
+  try {
+    const { format, content } = req.body;
+    let importCount = 0;
+
+    if (format === 'json') {
+      const parsed = Array.isArray(content) ? content : JSON.parse(content);
+      for (const q of parsed) {
+        const cloze_answer = q.cloze_answer || q.standard_answer || q.description || '';
+        const short_answer = q.short_answer || q.standard_answer || q.description || '';
+        const full_answer = q.full_answer || q.standard_answer || q.description || '';
+
+        // Extract cloze keywords if not provided
+        let cloze_keywords = q.cloze_keywords || q.keywords || [];
+        if (cloze_keywords.length === 0 && cloze_answer) {
+          const regex = /\*\*(.*?)\*\*/g;
+          let kwMatch;
+          while ((kwMatch = regex.exec(cloze_answer)) !== null) {
+            const kw = kwMatch[1].trim();
+            if (kw && !cloze_keywords.includes(kw)) {
+              cloze_keywords.push(kw);
+            }
+          }
+        }
+
+        const short_score_points = q.short_score_points || q.score_points || 
+          short_answer.split(/[。！；;!?\n]/).map(s => s.trim()).filter(s => s.length > 5);
+
+        const full_score_points = q.full_score_points || q.score_points || 
+          full_answer.split(/[。！；;!?\n]/).map(s => s.trim()).filter(s => s.length > 5);
+
+        await createQuestion({
+          question: q.question || q.title,
+          subject: q.subject || '专业课',
+          chapter: q.chapter || '未分类',
+          cloze_answer,
+          cloze_keywords,
+          short_answer,
+          short_score_points,
+          full_answer,
+          full_score_points,
+          difficulty: q.difficulty || 3,
+          importance: q.importance || 3
+        });
+        importCount++;
       }
-      continue;
-    }
-    
-    // Parse bullet points inside an item
-    if (currentItem && line !== '') {
-      currentItem.rawContent.push(line);
-      
-      // Match bullet point formats: e.g. * **term**：definition or 1. **term**：definition
-      const listItemMatch = line.match(/^([*\-+]$|^\*|^\d+\.)\s+(.*)/);
-      if (listItemMatch) {
-        const itemContent = listItemMatch[2].trim();
+    } else if (format === 'markdown') {
+      // Parse markdown contents
+      const lines = content.split(/\r?\n/);
+      let currentSubject = '专业课';
+      let currentChapter = '未分类';
+
+      // We parse headings and list structures
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
         
-        // Match: **term**: definition OR *term* classification: definition
-        const termMatch = itemContent.match(/^(?:\*\*|\*)(.*?)(?:\*\*|\*)\s*(.*?)\s*[：:]\s*(.*)/);
-        
-        if (termMatch) {
-          const mainTerm = termMatch[1].trim();
-          const subTerm = termMatch[2].trim();
-          const concept = subTerm ? `${mainTerm} (${subTerm})` : mainTerm;
-          const description = termMatch[3].trim();
+        // Subject / Chapter parsing
+        if (line.startsWith('# ')) {
+          currentSubject = line.replace('# ', '').trim();
+          continue;
+        }
+        if (line.startsWith('## ')) {
+          currentChapter = line.replace(/^##\s*(📅)?\s*/, '').trim();
+          continue;
+        }
+
+        // Check for Markdown flashcard: e.g. * **term**：definition
+        const flashcardMatch = line.match(/^([*\-+]$|^\*|^\d+\.)\s+(.*)/);
+        if (flashcardMatch) {
+          const itemContent = flashcardMatch[2].trim();
+          const termMatch = itemContent.match(/^(?:\*\*|\*)(.*?)(?:\*\*|\*)\s*(.*?)\s*[：:]\s*(.*)/);
           
-          // Extract keywords (all bold texts in the description)
+          if (termMatch) {
+            const concept = termMatch[1].trim();
+            const subTerm = termMatch[2].trim();
+            const fullConcept = subTerm ? `${concept} (${subTerm})` : concept;
+            const description = termMatch[3].trim();
+            
+            // Extract bold keywords
+            const keywords = [];
+            const regex = /\*\*(.*?)\*\*/g;
+            let kwMatch;
+            while ((kwMatch = regex.exec(description)) !== null) {
+              const kw = kwMatch[1].trim();
+              if (kw && !keywords.includes(kw)) {
+                keywords.push(kw);
+              }
+            }
+
+            const points = description.split(/[。！；;!?\n]/).map(s => s.trim()).filter(s => s.length > 5);
+
+            await createQuestion({
+              question: fullConcept,
+              subject: currentSubject,
+              chapter: currentChapter,
+              cloze_answer: description,
+              cloze_keywords: keywords,
+              short_answer: description,
+              short_score_points: points,
+              full_answer: description,
+              full_score_points: points,
+              difficulty: 3,
+              importance: 3
+            });
+            importCount++;
+          }
+        } else if (line.startsWith('### ')) {
+          // Parse header items: e.g. ### 1. 地理数据和地理信息
+          const rawTitle = line.replace('### ', '').trim();
+          const match = rawTitle.match(/^(\d+)\.\s*(.*)/);
+          const title = match ? match[2] : rawTitle;
+
+          // Read body lines until next heading
+          let bodyLines = [];
+          let scorePoints = [];
+          let nextIdx = i + 1;
+          while (nextIdx < lines.length && !lines[nextIdx].trim().startsWith('##')) {
+            const nextLine = lines[nextIdx].trim();
+            if (nextLine) {
+              if (nextLine.startsWith('* ') || nextLine.startsWith('- ') || /^\d+\./.test(nextLine)) {
+                const pt = nextLine.replace(/^(\*\s*|-\s*|\d+\.\s*)/, '').trim();
+                scorePoints.push(pt);
+              } else {
+                bodyLines.push(nextLine);
+              }
+            }
+            nextIdx++;
+          }
+          i = nextIdx - 1; // Advance main loop
+
+          const normalParagraphsText = bodyLines.join('\n');
+          const bulletPointsText = scorePoints.map((pt, idx) => `${idx + 1}. ${pt}`).join('\n');
+          
+          let fullAnswer = '';
+          if (normalParagraphsText && bulletPointsText) {
+            fullAnswer = normalParagraphsText + '\n\n' + bulletPointsText;
+          } else {
+            fullAnswer = normalParagraphsText || bulletPointsText;
+          }
+
+          const clozeAnswer = fullAnswer;
           const keywords = [];
           const regex = /\*\*(.*?)\*\*/g;
           let kwMatch;
-          while ((kwMatch = regex.exec(description)) !== null) {
+          while ((kwMatch = regex.exec(clozeAnswer)) !== null) {
             const kw = kwMatch[1].trim();
             if (kw && !keywords.includes(kw)) {
               keywords.push(kw);
             }
           }
-          
-          currentItem.points.push({
-            id: `${currentItem.id}_${currentItem.points.length + 1}`,
-            concept: concept,
-            description: description,
-            keywords: keywords,
-            rawLine: line
-          });
-        } else {
-          // General list item
-          const keywords = [];
-          const regex = /\*\*(.*?)\*\*/g;
-          let kwMatch;
-          while ((kwMatch = regex.exec(itemContent)) !== null) {
-            const kw = kwMatch[1].trim();
-            if (kw && !keywords.includes(kw)) {
-              keywords.push(kw);
-            }
+
+          let shortAnswer = '';
+          let shortScorePoints = [];
+          if (scorePoints.length > 0) {
+            shortAnswer = bulletPointsText;
+            shortScorePoints = [...scorePoints];
+          } else {
+            shortAnswer = normalParagraphsText;
+            shortScorePoints = normalParagraphsText.split(/[。！；;!?\n]/).map(s => s.trim()).filter(s => s.length > 5);
           }
-          
-          currentItem.points.push({
-            id: `${currentItem.id}_${currentItem.points.length + 1}`,
-            concept: currentItem.title,
-            description: itemContent,
-            keywords: keywords,
-            rawLine: line
+
+          let fullScorePoints = [];
+          if (scorePoints.length > 0) {
+            fullScorePoints = [...scorePoints];
+          }
+          if (normalParagraphsText) {
+            const extraPoints = normalParagraphsText.split(/[。！；;!?\n]/).map(s => s.trim()).filter(s => s.length > 5);
+            fullScorePoints = [...fullScorePoints, ...extraPoints];
+          }
+          if (fullScorePoints.length === 0) {
+            fullScorePoints = ['请补全详细论述得分点'];
+          }
+          if (shortScorePoints.length === 0) {
+            shortScorePoints = ['请补全简答得分点'];
+          }
+
+          await createQuestion({
+            question: title,
+            subject: currentSubject,
+            chapter: currentChapter,
+            cloze_answer: clozeAnswer,
+            cloze_keywords: keywords,
+            short_answer: shortAnswer,
+            short_score_points: shortScorePoints,
+            full_answer: fullAnswer,
+            full_score_points: fullScorePoints,
+            difficulty: 3,
+            importance: 3
           });
+          importCount++;
         }
       }
     }
+
+    res.json({ success: true, message: `Successfully imported ${importCount} questions.` });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
-  
-  // Post-process rawContent
-  result.forEach(group => {
-    group.items.forEach(item => {
-      item.rawContent = item.rawContent.join('\n');
-    });
-  });
-  
-  return result;
-}
+});
 
-// Write back structured changes to Markdown file
-function writeMarkdown(filePath, parsedData) {
-  let mdContent = '';
-  
-  // Add Header (mimicking the original header)
-  mdContent += `# 806 测绘地理信息学基础 - 近期每日背诵内容汇总 (6.12 - 6.15)\n\n`;
-  mdContent += `本文是根据您 \`D:\\考研\\专业课每日背诵\` 目录下的每日背诵文件（\`0612.docx\`、\`0614(1).docx\`、\`0615.docx\`）进行精炼整合，并在涉及测绘基础概念（大地水准面、参考椭球、旋转轴定位及四大坐标系）时，融入了您 \`806测绘地理信息学\` 和 \`测量学\` 专业课资料中的高分、标准定义，对核心词进行了加粗。\n\n`;
-  
-  parsedData.forEach(group => {
-    mdContent += `---\n\n`;
-    mdContent += `## 📅 ${group.date}\n\n`;
-    
-    group.items.forEach(item => {
-      mdContent += `### ${item.id}. ${item.title}\n`;
-      
-      if (item.points && item.points.length > 0) {
-        item.points.forEach((point, pIdx) => {
-          let linePrefix = '*   ';
-          if (point.rawLine && /^\d+\./.test(point.rawLine.trim())) {
-            const matchNum = point.rawLine.trim().match(/^(\d+\.)/);
-            linePrefix = `${matchNum[1]}  `;
-          }
-          
-          let conceptToWrite = point.concept;
-          mdContent += `${linePrefix}**${conceptToWrite}**：${point.description}\n`;
-        });
-      } else {
-        mdContent += `${item.rawContent}\n`;
-      }
-      mdContent += `\n`;
-    });
-  });
-  
-  backupFile(filePath);
-  fs.writeFileSync(filePath, mdContent, 'utf-8');
-}
-
-// API: Get structured recitation data
-app.get('/api/recitation', (req, res) => {
+// 11. Admin: Export questions to JSON
+app.get('/api/questions/export', async (req, res) => {
   try {
-    const data = parseMarkdown(MD_FILE_PATH);
+    const data = await getQuestions();
     res.json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// API: Save/update a specific recitation item or the whole markdown
-app.post('/api/recitation/update', (req, res) => {
+// 12. Admin: Clear database (for reset/re-sync)
+app.post('/api/questions/clear', async (req, res) => {
   try {
-    const { data } = req.body;
-    if (!data || !Array.isArray(data)) {
-      return res.status(400).json({ success: false, message: 'Invalid data format' });
-    }
-    writeMarkdown(MD_FILE_PATH, data);
-    res.json({ success: true, message: 'Markdown file updated successfully' });
+    await clearAllTables();
+    res.json({ success: true, message: 'All database tables cleared successfully.' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// API: Get user progress
-app.get('/api/progress', (req, res) => {
+// 13. Admin: AI Import helper
+app.post('/api/questions/import-ai', async (req, res) => {
   try {
-    if (fs.existsSync(PROGRESS_FILE_PATH)) {
-      const progress = JSON.parse(fs.readFileSync(PROGRESS_FILE_PATH, 'utf-8'));
-      res.json({ success: true, data: progress });
-    } else {
-      res.json({ success: true, data: { cardStatus: {}, history: [] } });
-    }
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// API: Save user progress
-app.post('/api/progress', (req, res) => {
-  try {
-    const progress = req.body;
-    fs.writeFileSync(PROGRESS_FILE_PATH, JSON.stringify(progress, null, 2), 'utf-8');
-    res.json({ success: true, message: 'Progress saved successfully' });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// API: AI proxy to avoid CORS
-app.post('/api/ai/grade', async (req, res) => {
-  try {
-    const { concept, description, keywords, userAnswer, apiKey, apiUrl, apiModel } = req.body;
-    
-    if (!apiKey) {
-      return res.status(400).json({ success: false, message: 'API Key is required' });
+    const { text, defaultSubject, defaultChapter } = req.body;
+    if (!text || !text.trim()) {
+      return res.status(400).json({ success: false, message: 'No text content provided.' });
     }
 
-    const response = await fetch(`${apiUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: apiModel,
-        messages: [
-          {
-            role: 'system',
-            content: `你是一位专业的测绘地理信息学考研专业课教师。请对比标准答案与学生的默写，进行智能语义评估打分（0-100分）。
-请允许同义词、近义词或句式不同的表达（例如把“大地球体”写成“参考地球椭球体”）。
+    const systemPrompt = `你是一位专业的GIS（地理信息系统）考研专业课辅导老师。请解析用户提供的专业课背诵文本（包含从 Word/Markdown 导入的原始内容，已用 **加粗标出核心词**）。
+你需要识别出文档中的章节名称，并提取出其中的每一个背诵概念/问题，将其整理为“三合一”背诵卡片结构写入数据库。
+
+对于提取出的每一个概念/问题，构建如下 JSON 对象：
+1. "question": 概念或问题的名称（例如："地理数据的特征"、"地理信息系统定义"）。不要包含前面的数字序号。
+2. "subject": 学科科目名称，如果没有从文中识别出，默认使用 "${defaultSubject || '专业课'}"。
+3. "chapter": 章节名称（例如："地理信息系统基础理论"、"GIS组成、功能与应用"）。如果从文中识别出如“X月X日背诵内容：XXX”，请以 “XXX” 作为章节名。如果没有识别出，默认使用 "${defaultChapter || '未分类'}"。
+4. "cloze_answer": 填空背诵要点。将原本文本中的核心加粗词保留为 **关键词**。填空题将对这些加粗词进行挖空。
+5. "cloze_keywords": 从 cloze_answer 中提取的所有被 ** 包裹的关键词数组（例如：["空间分布性", "空间定位"]），去除星号本身。
+6. "short_answer": 简答框架大类。整理出要点大类标题，去除过于累赘的详细展开，适合快速记忆框架（例如："（1）空间相关性：空间上越接近相关性越强。\n（2）空间区域性：按区域组织与应用。"）。
+7. "short_score_points": 简答题核心得分点数组（通常是每个大类框架的标题核心词，例如：["空间相关性", "空间区域性", "空间多样性", "空间层次性"]）。
+8. "full_answer": 论述展开细节。包含最完整的详细展开内容，字数要求饱满详实。
+9. "full_score_points": 详细得分点数组。用于与用户的长答案进行匹配打分（通常是每个大要点加上其核心解释的组合，例如：["空间相关性：空间依赖性（地理学第一定律）", "空间区域性：按区域组织应用"]）。
+10. "difficulty": 难度 (1-5 整数，默认3)。
+11. "importance": 重要度 (1-5 整数，默认3)。
+
 你必须输出且仅输出一个合法的 JSON 格式对象，结构如下：
 {
-  "score": 85,
-  "comments": "简短的中肯评语，说明哪些点答得好，哪些得分核心词遗漏了。字数控制在100字以内。",
-  "synonyms": [{"student": "学生用的词", "standard": "对应的标准关键词"}]
+  "questions": [
+    {
+      "question": "...",
+      "subject": "...",
+      "chapter": "...",
+      "cloze_answer": "...",
+      "cloze_keywords": ["...", "..."],
+      "short_answer": "...",
+      "short_score_points": ["...", "..."],
+      "full_answer": "...",
+      "full_score_points": ["...", "..."],
+      "difficulty": 3,
+      "importance": 3
+    }
+  ]
 }
-不要有任何 Markdown 包裹（不要 \`\`\`json），直接输出 JSON 内容。`
-          },
-          {
-            role: 'user',
-            content: `名词：${concept}\n标准答案：${description}\n必须包含的得分核心词：${keywords.join(', ')}\n学生的默写回答：${userAnswer}`
-          }
-        ],
-        temperature: 0.2
-      })
-    });
+不要有任何 Markdown 包裹（不要使用 \`\`\`json 标记），直接输出 JSON 内容。`;
 
-    const data = await response.json();
+    const userPrompt = `需要解析的文本内容如下：\n\n${text}`;
+
+    console.log("Calling LLM for AI Import, text length:", text.length);
+    const aiResponse = await callLLM(systemPrompt, userPrompt);
     
-    if (data.error) {
-      return res.status(400).json({ success: false, message: data.error.message || 'API error' });
+    // Parse response
+    let parsed;
+    try {
+      parsed = JSON.parse(aiResponse.trim());
+    } catch (parseErr) {
+      console.error("Failed to parse LLM JSON response. Response was:", aiResponse);
+      // Try cleaning up any markdown block wrappers if LLM still output them
+      const cleaned = aiResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+      parsed = JSON.parse(cleaned);
     }
 
-    res.json({ success: true, data });
+    if (!parsed || !parsed.questions || !Array.isArray(parsed.questions)) {
+      throw new Error("Invalid AI response structure. Expected 'questions' array.");
+    }
+
+    let importCount = 0;
+    for (const q of parsed.questions) {
+      // Create each question in database
+      await createQuestion({
+        question: q.question,
+        subject: q.subject || defaultSubject || '专业课',
+        chapter: q.chapter || defaultChapter || '未分类',
+        cloze_answer: q.cloze_answer,
+        cloze_keywords: q.cloze_keywords || [],
+        short_answer: q.short_answer,
+        short_score_points: q.short_score_points || [],
+        full_answer: q.full_answer,
+        full_score_points: q.full_score_points || [],
+        difficulty: parseInt(q.difficulty || '3') || 3,
+        importance: parseInt(q.importance || '3') || 3
+      });
+      importCount++;
+    }
+
+    res.json({ success: true, message: `Successfully imported ${importCount} questions via AI.`, count: importCount });
   } catch (error) {
+    console.error("AI Import failed:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// Host front-end build files (in production)
+// ----------------------------------------------------------------
+// FRONTEND HOSTING
+// ----------------------------------------------------------------
 app.use(express.static(path.join(__dirname, 'dist')));
-app.get(/.*/, (req, res) => {
+
+app.get('*all', (req, res) => {
   const indexHtml = path.join(__dirname, 'dist', 'index.html');
   if (fs.existsSync(indexHtml)) {
     res.sendFile(indexHtml);
   } else {
-    res.send('Frontend build not found. Running in dev-only backend mode.');
+    res.send('Frontend build not found. Running in API-only mode.');
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
-});
+// Initialize DB schema and start server
+initDb()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server is running on http://localhost:${PORT}`);
+    });
+  })
+  .catch(err => {
+    console.error('Fatal: Database initialization failed!', err);
+    process.exit(1);
+  });
