@@ -188,7 +188,20 @@ export default function QuestionManager({ globalImportState, onStartGlobalImport
     e.preventDefault();
 
     // Prepare keywords and score points
-    const cloze_keywords = formClozeKeywords.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+    let cloze_keywords = formClozeKeywords.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+    
+    // Automatically extract keywords from cloze_answer if the keywords list is left empty
+    if (cloze_keywords.length === 0 && formClozeAnswer) {
+      const regex = /\*\*(.*?)\*\*/g;
+      let kwMatch;
+      while ((kwMatch = regex.exec(formClozeAnswer)) !== null) {
+        const kw = kwMatch[1].trim();
+        if (kw && !cloze_keywords.includes(kw)) {
+          cloze_keywords.push(kw);
+        }
+      }
+    }
+
     const full_score_points = formFullScorePoints.map(s => s.trim()).filter(Boolean);
     const knowledge_points = formKnowledgePoints.split(/[,，]/).map(s => s.trim()).filter(Boolean);
 
