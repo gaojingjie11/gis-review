@@ -6,7 +6,9 @@ export default function Settings({
   dailyNewGoal, 
   setDailyNewGoal, 
   dailyReviewGoal, 
-  setDailyReviewGoal 
+  setDailyReviewGoal,
+  user,
+  onLogout
 }) {
   const [message, setMessage] = useState('');
 
@@ -288,6 +290,26 @@ export default function Settings({
             无论在哪个设备上作答，数据均能保持秒级同步。
           </p>
         </div>
+
+        {/* User Account */}
+        {onLogout && (
+          <div style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '1.5rem' }}>
+            <h3 style={{ fontSize: '1.1rem', color: 'var(--accent)', marginBottom: '0.5rem', fontFamily: 'var(--font-display)' }}>
+              👤 当前登录账户
+            </h3>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1rem' }}>
+              当前登录用户: <strong>{user?.username || '已登录用户'}</strong>
+            </p>
+            <button 
+              type="button" 
+              className="text-btn" 
+              onClick={onLogout}
+              style={{ color: 'var(--accent)', borderColor: 'var(--accent)', padding: '0.5rem 1.5rem', fontSize: '0.85rem' }}
+            >
+              退出当前账号
+            </button>
+          </div>
+        )}
 
         {/* Dangerous tools */}
         <div>

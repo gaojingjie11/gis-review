@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 
-export default function useReviews(dailyNewGoal, dailyReviewGoal) {
-  const [loading, setLoading] = useState(true);
+export default function useReviews(dailyNewGoal, dailyReviewGoal, enabled = true) {
+  const [loading, setLoading] = useState(enabled);
   const [stats, setStats] = useState(null);
   const [reviews, setReviews] = useState({
     newQuestions: [],
@@ -12,6 +12,7 @@ export default function useReviews(dailyNewGoal, dailyReviewGoal) {
   });
 
   const fetchReviews = useCallback(async () => {
+    if (!enabled) return;
     setLoading(true);
     try {
       const [resReviews, resStats] = await Promise.all([
@@ -29,11 +30,15 @@ export default function useReviews(dailyNewGoal, dailyReviewGoal) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
-    fetchReviews();
-  }, [fetchReviews]);
+    if (enabled) {
+      fetchReviews();
+    } else {
+      setLoading(false);
+    }
+  }, [fetchReviews, enabled]);
 
   // Derived properties and capping
   const newQuestionsCount = reviews.newQuestions?.length || 0;

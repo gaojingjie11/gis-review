@@ -8,10 +8,75 @@ import Settings from './components/Settings';
 import DailyPractice from './components/DailyPractice';
 import HomeScreen from './components/HomeScreen';
 import AppShell from './components/AppShell';
+import LoginScreen from './components/LoginScreen';
 import useSettings from './hooks/useSettings';
 import useReviews from './hooks/useReviews';
 import './App.css';
 import './theme/theme.css';
+
+// Guard patch to avoid recursion when HMR hot reloads
+if (!window.__fetchPatched) {
+  window.__fetchPatched = true;
+  const originalFetch = window.fetch;
+  window.fetch = async function (resource, options = {}) {
+    const url = typeof resource === 'string' ? resource : resource.url;
+    const isApiRequest = url && url.startsWith('/api/');
+    const isAuthRequest = url && (
+      url.includes('/api/auth/login') ||
+      url.includes('/api/auth/register') ||
+      url.includes('/api/auth/refresh')
+    );
+
+    let updatedOptions = { ...options };
+    
+    if (isApiRequest && !isAuthRequest) {
+      const token = localStorage.getItem('gis_access_token');
+      if (token) {
+        updatedOptions.headers = {
+          ...updatedOptions.headers,
+          'Authorization': `Bearer ${token}`
+        };
+      }
+    }
+
+    let response = await originalFetch(resource, updatedOptions);
+
+    if (response.status === 401 && isApiRequest && !isAuthRequest) {
+      const refreshToken = localStorage.getItem('gis_refresh_token');
+      if (refreshToken) {
+        try {
+          const refreshResponse = await originalFetch('/api/auth/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refreshToken })
+          });
+          
+          if (refreshResponse.ok) {
+            const refreshData = await refreshResponse.json();
+            if (refreshData.success && refreshData.accessToken) {
+              localStorage.setItem('gis_access_token', refreshData.accessToken);
+              
+              updatedOptions.headers = {
+                ...updatedOptions.headers,
+                'Authorization': `Bearer ${refreshData.accessToken}`
+              };
+              response = await originalFetch(resource, updatedOptions);
+              return response;
+            }
+          }
+        } catch (err) {
+          console.error('Silent refresh failed:', err);
+        }
+      }
+      
+      localStorage.removeItem('gis_access_token');
+      localStorage.removeItem('gis_refresh_token');
+      window.dispatchEvent(new Event('auth_logout'));
+    }
+
+    return response;
+  };
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('home');
@@ -24,6 +89,11 @@ export default function App() {
   const [practiceQueueName, setPracticeQueueName] = useState('');
   const [practiceMode, setPracticeMode] = useState('standard');
 
+  // Authentication State
+  const [user, setUser] = useState(null);
+  const [accessToken, setAccessToken] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
   const {
     theme,
     setTheme,
@@ -33,7 +103,7 @@ export default function App() {
     setDailyReviewGoal
   } = useSettings();
 
-  const reviewsData = useReviews(dailyNewGoal, dailyReviewGoal);
+  const reviewsData = useReviews(dailyNewGoal, dailyReviewGoal, !!accessToken);
 
   const toggleTheme = () => {
     setTheme(theme === 'orderly' ? 'misty-rose' : 'orderly');
@@ -54,10 +124,113 @@ export default function App() {
     setActiveTab('home');
   };
 
+  // Handle Logout
+  const handleLogout = () => {
+    localStorage.removeItem('gis_access_token');
+    localStorage.removeItem('gis_refresh_token');
+    setUser(null);
+    setAccessToken(null);
+    handleExitSession();
+  };
+
+  // Auth initialization on mount
+  useEffect(() => {
+    const initAuth = async () => {
+      const storedAccessToken = localStorage.getItem('gis_access_token');
+      const storedRefreshToken = localStorage.getItem('gis_refresh_token');
+
+      if (!storedAccessToken && !storedRefreshToken) {
+        setAuthLoading(false);
+        return;
+      }
+
+      if (storedAccessToken) {
+        try {
+          const resProfile = await fetch('/api/auth/me', {
+            headers: { 'Authorization': `Bearer ${storedAccessToken}` }
+          });
+          if (resProfile.ok) {
+            const data = await resProfile.json();
+            if (data.success) {
+              setUser(data.user);
+              setAccessToken(storedAccessToken);
+              
+              // Slide the refresh token since user is active within 2 days
+              try {
+                const resRefreshLong = await fetch('/api/auth/refresh-long', {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${storedAccessToken}` }
+                });
+                const refreshLongData = await resRefreshLong.json();
+                if (refreshLongData.success) {
+                  localStorage.setItem('gis_refresh_token', refreshLongData.refreshToken);
+                }
+              } catch (e) {
+                console.error('Failed to slide refresh token:', e);
+              }
+              setAuthLoading(false);
+              return;
+            }
+          }
+        } catch (err) {
+          console.error('Initial token verification failed:', err);
+        }
+      }
+
+      // If access token was invalid/missing, try refresh token
+      if (storedRefreshToken) {
+        try {
+          const resRefresh = await fetch('/api/auth/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refreshToken: storedRefreshToken })
+          });
+          const refreshData = await resRefresh.json();
+          if (refreshData.success && refreshData.accessToken) {
+            localStorage.setItem('gis_access_token', refreshData.accessToken);
+            setAccessToken(refreshData.accessToken);
+
+            const resProfile = await fetch('/api/auth/me', {
+              headers: { 'Authorization': `Bearer ${refreshData.accessToken}` }
+            });
+            const profileData = await resProfile.json();
+            if (profileData.success) {
+              setUser(profileData.user);
+            }
+          } else {
+            // Refresh token expired/invalid as well
+            localStorage.removeItem('gis_access_token');
+            localStorage.removeItem('gis_refresh_token');
+          }
+        } catch (err) {
+          console.error('Initial refresh token check failed:', err);
+        }
+      }
+
+      setAuthLoading(false);
+    };
+
+    initAuth();
+  }, []);
+
+  // Listen to auth_logout custom events triggered by fetch interceptor
+  useEffect(() => {
+    const handleLogoutEvent = () => {
+      setUser(null);
+      setAccessToken(null);
+    };
+    window.addEventListener('auth_logout', handleLogoutEvent);
+    return () => {
+      window.removeEventListener('auth_logout', handleLogoutEvent);
+    };
+  }, []);
+
   // Initialize data from database
   useEffect(() => {
-    fetchQuestions();
-  }, []);
+    if (accessToken) {
+      fetchQuestions();
+    }
+  }, [accessToken]);
 
   // Global customAlert and customConfirm registration
   useEffect(() => {
@@ -175,6 +348,32 @@ export default function App() {
       await window.customAlert('卡片评估网络请求出错。');
     }
   };
+
+  if (authLoading) {
+    return (
+      <div className="app-container" data-theme={theme || 'misty-rose'}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+          <div className="spinner"></div>
+          <p style={{ marginTop: '1rem', color: 'var(--text-secondary)' }}>正在验证账户会话...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="app-container" data-theme={theme || 'misty-rose'}>
+        <LoginScreen 
+          onLoginSuccess={(userData, token) => {
+            setUser(userData);
+            setAccessToken(token);
+          }}
+          theme={theme}
+          toggleTheme={toggleTheme}
+        />
+      </div>
+    );
+  }
 
   return (
     <AppShell
@@ -360,6 +559,8 @@ export default function App() {
               setDailyNewGoal={setDailyNewGoal}
               dailyReviewGoal={dailyReviewGoal}
               setDailyReviewGoal={setDailyReviewGoal}
+              user={user}
+              onLogout={handleLogout}
             />
           )}
         </>

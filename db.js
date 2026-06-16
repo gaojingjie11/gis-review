@@ -1,5 +1,6 @@
 import pg from 'pg';
 import dotenv from 'dotenv';
+import bcrypt from 'bcryptjs';
 
 dotenv.config();
 
@@ -103,10 +104,37 @@ export async function initDb() {
     );
   `);
 
-  // 4. Create answers_history table (Redesigned for weighted scores)
+  // 4. Create users table
+  await query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      username VARCHAR(255) UNIQUE NOT NULL,
+      password_hash VARCHAR(255) NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Create default admin user if no users exist
+  const salt = await bcrypt.genSalt(10);
+  const defaultHash = await bcrypt.hash('admin123', salt);
+  const userCheck = await query('SELECT id FROM users LIMIT 1');
+  let defaultUserId = null;
+  if (userCheck.rows.length === 0) {
+    const insertRes = await query(
+      'INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id',
+      ['admin', defaultHash]
+    );
+    defaultUserId = insertRes.rows[0].id;
+    console.log('Created default admin user with ID:', defaultUserId);
+  } else {
+    defaultUserId = userCheck.rows[0].id;
+  }
+
+  // 5. Create answers_history table (Redesigned for weighted scores, with user relation)
   await query(`
     CREATE TABLE IF NOT EXISTS answers_history (
       id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
       question_id INTEGER REFERENCES questions(id) ON DELETE CASCADE,
       cloze_score NUMERIC,
       full_score NUMERIC,
@@ -118,11 +146,12 @@ export async function initDb() {
     );
   `);
 
-  // 5. Create review_states table
+  // 6. Create review_states table (with user relation)
   await query(`
     CREATE TABLE IF NOT EXISTS review_states (
       id SERIAL PRIMARY KEY,
-      question_id INTEGER UNIQUE REFERENCES questions(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      question_id INTEGER REFERENCES questions(id) ON DELETE CASCADE,
       mastery_level INTEGER DEFAULT 0, -- 0:未学, 1:完全不会, 2:模糊, 3:基本会, 4:熟练, 5:长期掌握
       review_count INTEGER DEFAULT 0,
       error_count INTEGER DEFAULT 0,
@@ -134,11 +163,39 @@ export async function initDb() {
     );
   `);
 
+  // Run migrations to add user_id column and drop old constraints on review_states and answers_history
+  try {
+    await query('ALTER TABLE review_states ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE');
+    await query('ALTER TABLE answers_history ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE');
+    
+    // Migrate existing data to default admin user
+    await query('UPDATE review_states SET user_id = $1 WHERE user_id IS NULL', [defaultUserId]);
+    await query('UPDATE answers_history SET user_id = $1 WHERE user_id IS NULL', [defaultUserId]);
+    
+    // Set user_id as NOT NULL
+    await query('ALTER TABLE review_states ALTER COLUMN user_id SET NOT NULL');
+    await query('ALTER TABLE answers_history ALTER COLUMN user_id SET NOT NULL');
+    
+    // Drop single question_id constraint if it exists on review_states
+    await query('ALTER TABLE review_states DROP CONSTRAINT IF EXISTS review_states_question_id_key');
+    
+    // Add composite constraint (user_id, question_id) UNIQUE
+    const constraintCheck = await query(`
+      SELECT constraint_name FROM information_schema.table_constraints
+      WHERE table_name = 'review_states' AND constraint_name = 'uniq_user_question'
+    `);
+    if (constraintCheck.rows.length === 0) {
+      await query('ALTER TABLE review_states ADD CONSTRAINT uniq_user_question UNIQUE (user_id, question_id)');
+    }
+  } catch (err) {
+    console.error('Migration failed:', err.message);
+  }
+
   // Index creation for performance
   await query(`CREATE INDEX IF NOT EXISTS idx_questions_subject ON questions(subject);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_questions_chapter ON questions(chapter);`);
-  await query(`CREATE INDEX IF NOT EXISTS idx_review_states_next_review ON review_states(next_review_time);`);
-  await query(`CREATE INDEX IF NOT EXISTS idx_answers_history_question ON answers_history(question_id);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_review_states_user_next ON review_states(user_id, next_review_time);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_answers_history_user_question ON answers_history(user_id, question_id);`);
 
   // Run migrations to add weakness_summary and question_type columns if not exists
   try {
@@ -236,16 +293,16 @@ async function seedDefaultData() {
       ON CONFLICT DO NOTHING
     `, [questionId, tagId]);
 
-    // Initialize review state
+    // Initialize review state for default admin user
     await query(`
-      INSERT INTO review_states (question_id, mastery_level, review_count, error_count, next_review_time)
-      VALUES ($1, 0, 0, 0, CURRENT_TIMESTAMP)
-    `, [questionId]);
+      INSERT INTO review_states (user_id, question_id, mastery_level, review_count, error_count, next_review_time)
+      VALUES ($1, $2, 0, 0, 0, CURRENT_TIMESTAMP)
+    `, [defaultUserId, questionId]);
   }
 }
 
-// Get all questions
-export async function getQuestions(filters = {}) {
+// Get all questions (user-scoped progress)
+export async function getQuestions(userId, filters = {}) {
   let sql = `
     SELECT q.*, 
            COALESCE(rs.mastery_level, 0) as mastery_level,
@@ -254,11 +311,11 @@ export async function getQuestions(filters = {}) {
            rs.last_score,
            rs.next_review_time
     FROM questions q
-    LEFT JOIN review_states rs ON q.id = rs.question_id
+    LEFT JOIN review_states rs ON q.id = rs.question_id AND rs.user_id = $1
     WHERE 1=1
   `;
-  const params = [];
-  let paramCount = 1;
+  const params = [userId];
+  let paramCount = 2;
 
   if (filters.subject) {
     sql += ` AND q.subject = $${paramCount}`;
@@ -288,8 +345,8 @@ export async function getQuestions(filters = {}) {
   }));
 }
 
-// Get single question
-export async function getQuestion(id) {
+// Get single question (user-scoped progress)
+export async function getQuestion(id, userId) {
   const sql = `
     SELECT q.*, 
            COALESCE(rs.mastery_level, 0) as mastery_level,
@@ -298,10 +355,10 @@ export async function getQuestion(id) {
            rs.last_score,
            rs.next_review_time
     FROM questions q
-    LEFT JOIN review_states rs ON q.id = rs.question_id
-    WHERE q.id = $1
+    LEFT JOIN review_states rs ON q.id = rs.question_id AND rs.user_id = $1
+    WHERE q.id = $2
   `;
-  const res = await query(sql, [id]);
+  const res = await query(sql, [userId, id]);
   if (res.rows.length === 0) return null;
   const row = res.rows[0];
   return {
@@ -363,12 +420,6 @@ export async function createQuestion(q) {
     ON CONFLICT DO NOTHING
   `, [questionId, tagId]);
 
-  // Initialize review state
-  await query(`
-    INSERT INTO review_states (question_id, mastery_level, review_count, error_count, next_review_time)
-    VALUES ($1, 0, 0, 0, CURRENT_TIMESTAMP)
-  `, [questionId]);
-
   return questionId;
 }
 
@@ -425,8 +476,8 @@ export async function deleteQuestion(id) {
   await query('DELETE FROM questions WHERE id = $1', [id]);
 }
 
-// Get today's review queues
-export async function getTodayReviews() {
+// Get today's review queues (user-scoped)
+export async function getTodayReviews(userId) {
   const sql = `
     SELECT q.*, 
            COALESCE(rs.mastery_level, 0) as mastery_level,
@@ -437,10 +488,10 @@ export async function getTodayReviews() {
            rs.weakness_summary,
            rs.next_review_time
     FROM questions q
-    LEFT JOIN review_states rs ON q.id = rs.question_id
+    LEFT JOIN review_states rs ON q.id = rs.question_id AND rs.user_id = $1
     ORDER BY rs.next_review_time ASC
   `;
-  const res = await query(sql);
+  const res = await query(sql, [userId]);
   const now = new Date();
   
   const categories = {
@@ -519,16 +570,17 @@ export async function getTodayReviews() {
   return categories;
 }
 
-// Log answer attempt (with tri-scores) and schedule next spaced review
-export async function saveGrade(questionId, detailScores, inputs, aiFeedback) {
+// Log answer attempt (with tri-scores) and schedule next spaced review (user-scoped)
+export async function saveGrade(userId, questionId, detailScores, inputs, aiFeedback) {
   const { clozeScore, fullScore, totalScore } = detailScores;
   const { clozeAnswers, fullAnswerInput } = inputs;
 
   // 1. Insert history log
   await query(`
-    INSERT INTO answers_history (question_id, cloze_score, full_score, total_score, cloze_answers, full_answer_input, ai_feedback)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    INSERT INTO answers_history (user_id, question_id, cloze_score, full_score, total_score, cloze_answers, full_answer_input, ai_feedback)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
   `, [
+    userId,
     questionId, 
     clozeScore, 
     fullScore, 
@@ -545,7 +597,7 @@ export async function saveGrade(questionId, detailScores, inputs, aiFeedback) {
   nextReviewTime.setDate(now.getDate() + intervalDays);
 
   // Determine mastery level adjustment
-  const currentRS = await query('SELECT mastery_level, review_count, error_count, average_score FROM review_states WHERE question_id = $1', [questionId]);
+  const currentRS = await query('SELECT mastery_level, review_count, error_count, average_score FROM review_states WHERE user_id = $1 AND question_id = $2', [userId, questionId]);
   let currentLevel = 0;
   let reviewCount = 0;
   let errorCount = 0;
@@ -577,9 +629,9 @@ export async function saveGrade(questionId, detailScores, inputs, aiFeedback) {
     : JSON.stringify([]);
 
   await query(`
-    INSERT INTO review_states (question_id, mastery_level, review_count, error_count, last_score, average_score, last_review_time, next_review_time, weakness_summary, updated_at)
-    VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, $7, $8, CURRENT_TIMESTAMP)
-    ON CONFLICT (question_id) DO UPDATE SET
+    INSERT INTO review_states (user_id, question_id, mastery_level, review_count, error_count, last_score, average_score, last_review_time, next_review_time, weakness_summary, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, $8, $9, CURRENT_TIMESTAMP)
+    ON CONFLICT (user_id, question_id) DO UPDATE SET
       mastery_level = EXCLUDED.mastery_level,
       review_count = EXCLUDED.review_count,
       error_count = EXCLUDED.error_count,
@@ -589,17 +641,17 @@ export async function saveGrade(questionId, detailScores, inputs, aiFeedback) {
       next_review_time = EXCLUDED.next_review_time,
       weakness_summary = EXCLUDED.weakness_summary,
       updated_at = CURRENT_TIMESTAMP
-  `, [questionId, newLevel, reviewCount, errorCount, totalScore, newAvgScore, nextReviewTime, weaknessSummary]);
+  `, [userId, questionId, newLevel, reviewCount, errorCount, totalScore, newAvgScore, nextReviewTime, weaknessSummary]);
 }
 
-// Log card rating (忘记, 困难, 基本会, 熟练) and update schedule
-export async function rateCard(questionId, rating) {
+// Log card rating (忘记, 困难, 基本会, 熟练) and update schedule (user-scoped)
+export async function rateCard(userId, questionId, rating) {
   const intervalDays = SCHEDULER_RULES.intervalsByRating[rating] || 1;
   const now = new Date();
   const nextReviewTime = new Date();
   nextReviewTime.setDate(now.getDate() + intervalDays);
 
-  const currentRS = await query('SELECT mastery_level, review_count, error_count FROM review_states WHERE question_id = $1', [questionId]);
+  const currentRS = await query('SELECT mastery_level, review_count, error_count FROM review_states WHERE user_id = $1 AND question_id = $2', [userId, questionId]);
   let currentLevel = 0;
   let reviewCount = 0;
   let errorCount = 0;
@@ -626,9 +678,10 @@ export async function rateCard(questionId, rating) {
 
   // Save history log
   await query(`
-    INSERT INTO answers_history (question_id, total_score, full_answer_input, ai_feedback)
-    VALUES ($1, $2, $3, $4)
+    INSERT INTO answers_history (user_id, question_id, total_score, full_answer_input, ai_feedback)
+    VALUES ($1, $2, $3, $4, $5)
   `, [
+    userId,
     questionId, 
     rating === 'easy' ? 10 : rating === 'good' ? 8 : rating === 'hard' ? 5 : 2, 
     `[卡片自评] ${rating}`, 
@@ -637,9 +690,9 @@ export async function rateCard(questionId, rating) {
 
   // Upsert review state
   await query(`
-    INSERT INTO review_states (question_id, mastery_level, review_count, error_count, last_score, last_review_time, next_review_time, updated_at)
-    VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, $6, CURRENT_TIMESTAMP)
-    ON CONFLICT (question_id) DO UPDATE SET
+    INSERT INTO review_states (user_id, question_id, mastery_level, review_count, error_count, last_score, last_review_time, next_review_time, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, $7, CURRENT_TIMESTAMP)
+    ON CONFLICT (user_id, question_id) DO UPDATE SET
       mastery_level = EXCLUDED.mastery_level,
       review_count = EXCLUDED.review_count,
       error_count = EXCLUDED.error_count,
@@ -647,22 +700,22 @@ export async function rateCard(questionId, rating) {
       last_review_time = EXCLUDED.last_review_time,
       next_review_time = EXCLUDED.next_review_time,
       updated_at = CURRENT_TIMESTAMP
-  `, [questionId, newLevel, reviewCount, errorCount, rating === 'easy' ? 10 : rating === 'good' ? 8 : rating === 'hard' ? 5 : 2, nextReviewTime]);
+  `, [userId, questionId, newLevel, reviewCount, errorCount, rating === 'easy' ? 10 : rating === 'good' ? 8 : rating === 'hard' ? 5 : 2, nextReviewTime]);
 }
 
-// Get statistics for dashboard and weaknesses analysis
-export async function getStatistics() {
+// Get statistics for dashboard and weaknesses analysis (user-scoped)
+export async function getStatistics(userId) {
   const totalQ = await query('SELECT COUNT(*) FROM questions');
-  const studiedQ = await query('SELECT COUNT(*) FROM review_states WHERE mastery_level > 0');
+  const studiedQ = await query('SELECT COUNT(*) FROM review_states WHERE user_id = $1 AND mastery_level > 0', [userId]);
   
   // Mastery levels distribution
   const masteryDist = await query(`
     SELECT COALESCE(rs.mastery_level, 0) as level, COUNT(*) as count
     FROM questions q
-    LEFT JOIN review_states rs ON q.id = rs.question_id
+    LEFT JOIN review_states rs ON q.id = rs.question_id AND rs.user_id = $1
     GROUP BY COALESCE(rs.mastery_level, 0)
     ORDER BY level ASC
-  `);
+  `, [userId]);
 
   // Completion statuses for today
   const now = new Date();
@@ -670,28 +723,28 @@ export async function getStatistics() {
   const completedToday = await query(`
     SELECT COUNT(DISTINCT question_id) 
     FROM answers_history 
-    WHERE created_at >= $1
-  `, [startOfDay]);
+    WHERE user_id = $1 AND created_at >= $2
+  `, [userId, startOfDay]);
 
   // Average score (from total_score field)
-  const avgScore = await query('SELECT AVG(total_score) as avg FROM answers_history WHERE total_score >= 0');
+  const avgScore = await query('SELECT AVG(total_score) as avg FROM answers_history WHERE user_id = $1 AND total_score >= 0', [userId]);
 
   // Total errors count
-  const errorCount = await query('SELECT COUNT(*) FROM answers_history WHERE total_score < 5');
+  const errorCount = await query('SELECT COUNT(*) FROM answers_history WHERE user_id = $1 AND total_score < 5', [userId]);
 
   // Weaknesses analysis: chapters with most errors
   const chapterWeaknesses = await query(`
     SELECT q.chapter, COUNT(*) as error_count, AVG(ah.total_score) as avg_score
     FROM answers_history ah
     JOIN questions q ON ah.question_id = q.id
-    WHERE ah.total_score < 5
+    WHERE ah.user_id = $1 AND ah.total_score < 5
     GROUP BY q.chapter
     ORDER BY error_count DESC
     LIMIT 5
-  `);
+  `, [userId]);
 
   // Today's review queue
-  const todayReviews = await getTodayReviews();
+  const todayReviews = await getTodayReviews(userId);
   const activeReviews = [...todayReviews.delayedQuestions, ...todayReviews.dueQuestions];
 
   // Calculate highest priority chapter
@@ -718,30 +771,30 @@ export async function getStatistics() {
   const top10HardestRes = await query(`
     SELECT q.id, q.question, rs.error_count, rs.average_score, rs.review_count
     FROM questions q
-    JOIN review_states rs ON q.id = rs.question_id
+    JOIN review_states rs ON q.id = rs.question_id AND rs.user_id = $1
     WHERE rs.review_count > 0
     ORDER BY rs.error_count DESC, rs.average_score ASC
     LIMIT 10
-  `);
+  `, [userId]);
 
   // Upcoming forgotten questions (ordered by next review time asc)
   const upcomingForgottenRes = await query(`
     SELECT q.id, q.question, rs.next_review_time, rs.mastery_level
     FROM questions q
-    JOIN review_states rs ON q.id = rs.question_id
+    JOIN review_states rs ON q.id = rs.question_id AND rs.user_id = $1
     WHERE rs.mastery_level > 0
     ORDER BY rs.next_review_time ASC
     LIMIT 5
-  `);
+  `, [userId]);
 
   // Daily learning activity for last 7 days
   const dailyActivity = await query(`
     SELECT TO_CHAR(created_at, 'YYYY-MM-DD') as date, COUNT(*) as count, AVG(total_score) as avg_score
     FROM answers_history
-    WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+    WHERE user_id = $1 AND created_at >= CURRENT_DATE - INTERVAL '7 days'
     GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD')
     ORDER BY date ASC
-  `);
+  `, [userId]);
 
   // Mastery rate by chapter
   const chapterProgress = await query(`
@@ -750,17 +803,17 @@ export async function getStatistics() {
            COUNT(CASE WHEN rs.mastery_level >= 4 THEN 1 END) as mastered_count,
            COUNT(CASE WHEN rs.mastery_level > 0 AND rs.mastery_level < 4 THEN 1 END) as learning_count
     FROM questions q
-    LEFT JOIN review_states rs ON q.id = rs.question_id
+    LEFT JOIN review_states rs ON q.id = rs.question_id AND rs.user_id = $1
     GROUP BY q.chapter
     ORDER BY total_count DESC
-  `);
+  `, [userId]);
 
   // Parse AI common mistakes from weakness_summary JSON arrays
   const weaknessRes = await query(`
     SELECT rs.weakness_summary 
     FROM review_states rs
-    WHERE rs.weakness_summary IS NOT NULL AND rs.weakness_summary <> ''
-  `);
+    WHERE rs.user_id = $1 AND rs.weakness_summary IS NOT NULL AND rs.weakness_summary <> ''
+  `, [userId]);
   
   const mistakeCounts = {};
   weaknessRes.rows.forEach(row => {
@@ -817,4 +870,28 @@ export async function getStatistics() {
 
 export async function clearAllTables() {
   await query('TRUNCATE TABLE question_tags, answers_history, review_states, questions, tags CASCADE');
+}
+
+// ==========================================================================
+// User Authentication Helper Functions
+// ==========================================================================
+
+export async function createUser(username, passwordHash) {
+  const res = await query(
+    'INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id, username, created_at',
+    [username, passwordHash]
+  );
+  return res.rows[0];
+}
+
+export async function getUserByUsername(username) {
+  const res = await query('SELECT * FROM users WHERE username = $1', [username]);
+  if (res.rows.length === 0) return null;
+  return res.rows[0];
+}
+
+export async function getUserById(id) {
+  const res = await query('SELECT id, username, created_at FROM users WHERE id = $1', [id]);
+  if (res.rows.length === 0) return null;
+  return res.rows[0];
 }

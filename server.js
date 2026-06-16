@@ -4,6 +4,8 @@ import fs from 'fs';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import {
   initDb,
   query,
@@ -16,7 +18,10 @@ import {
   saveGrade,
   rateCard,
   getStatistics,
-  clearAllTables
+  clearAllTables,
+  createUser,
+  getUserByUsername,
+  getUserById
 } from './db.js';
 
 dotenv.config();
@@ -29,6 +34,156 @@ const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+// Middleware: Verify JWT Access Token
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) {
+    return res.status(401).json({ success: false, message: 'Access token required' });
+  }
+
+  jwt.verify(token, process.env.JWT_ACCESS_SECRET || 'access-secret-key-123456', (err, user) => {
+    if (err) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired access token' });
+    }
+    req.user = user;
+    next();
+  });
+}
+
+// ----------------------------------------------------------------
+// AUTHENTICATION ENDPOINTS
+// ----------------------------------------------------------------
+
+// 1. Register a new user
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { username, password, confirmPassword } = req.body;
+
+    if (!username || !password || !confirmPassword) {
+      return res.status(400).json({ success: false, message: '用户名、密码与确认密码不能为空' });
+    }
+
+    if (password !== confirmPassword) {
+      return res.status(400).json({ success: false, message: '两次输入的密码不一致' });
+    }
+
+    const existingUser = await getUserByUsername(username);
+    if (existingUser) {
+      return res.status(400).json({ success: false, message: '用户名已被占用' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash(password, salt);
+
+    const newUser = await createUser(username, passwordHash);
+    res.status(201).json({
+      success: true,
+      message: '注册成功',
+      user: { id: newUser.id, username: newUser.username }
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 2. Login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ success: false, message: '用户名和密码不能为空' });
+    }
+
+    const user = await getUserByUsername(username);
+    if (!user) {
+      return res.status(401).json({ success: false, message: '用户名或密码错误' });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password_hash);
+    if (!isMatch) {
+      return res.status(401).json({ success: false, message: '用户名或密码错误' });
+    }
+
+    const accessToken = jwt.sign(
+      { userId: user.id, username: user.username },
+      process.env.JWT_ACCESS_SECRET || 'access-secret-key-123456',
+      { expiresIn: '2d' }
+    );
+
+    const refreshToken = jwt.sign(
+      { userId: user.id, username: user.username },
+      process.env.JWT_REFRESH_SECRET || 'refresh-secret-key-123456',
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      success: true,
+      accessToken,
+      refreshToken,
+      user: { id: user.id, username: user.username }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 3. Refresh Access Token (using Refresh Token)
+app.post('/api/auth/refresh', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    if (!refreshToken) {
+      return res.status(400).json({ success: false, message: 'Refresh token is required' });
+    }
+
+    jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || 'refresh-secret-key-123456', (err, decoded) => {
+      if (err) {
+        return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
+      }
+
+      const accessToken = jwt.sign(
+        { userId: decoded.userId, username: decoded.username },
+        process.env.JWT_ACCESS_SECRET || 'access-secret-key-123456',
+        { expiresIn: '2d' }
+      );
+
+      res.json({ success: true, accessToken });
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 4. Refresh Long/Refresh Token (extend 7-day sliding window, using valid Access Token)
+app.post('/api/auth/refresh-long', authenticateToken, async (req, res) => {
+  try {
+    const refreshToken = jwt.sign(
+      { userId: req.user.userId, username: req.user.username },
+      process.env.JWT_REFRESH_SECRET || 'refresh-secret-key-123456',
+      { expiresIn: '7d' }
+    );
+    res.json({ success: true, refreshToken });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 5. Get current user profile
+app.get('/api/auth/me', authenticateToken, async (req, res) => {
+  try {
+    const user = await getUserById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    res.json({ success: true, user });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 // Helper: Call LLM API securely
 async function callLLM(systemPrompt, userPrompt) {
@@ -101,7 +256,7 @@ async function aiSplitScorePoints(question, standardAnswer) {
 // ----------------------------------------------------------------
 
 // 1. Get Questions list (with filtering)
-app.get('/api/questions', async (req, res) => {
+app.get('/api/questions', authenticateToken, async (req, res) => {
   try {
     const filters = {
       subject: req.query.subject,
@@ -109,7 +264,7 @@ app.get('/api/questions', async (req, res) => {
       type: req.query.type,
       search: req.query.search
     };
-    const data = await getQuestions(filters);
+    const data = await getQuestions(req.user.userId, filters);
     res.json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -117,9 +272,9 @@ app.get('/api/questions', async (req, res) => {
 });
 
 // 2. Get Question Details
-app.get('/api/questions/:id', async (req, res) => {
+app.get('/api/questions/:id', authenticateToken, async (req, res) => {
   try {
-    const data = await getQuestion(parseInt(req.params.id));
+    const data = await getQuestion(parseInt(req.params.id), req.user.userId);
     if (!data) {
       return res.status(404).json({ success: false, message: 'Question not found' });
     }
@@ -130,7 +285,7 @@ app.get('/api/questions/:id', async (req, res) => {
 });
 
 // 3. Create Question
-app.post('/api/questions', async (req, res) => {
+app.post('/api/questions', authenticateToken, async (req, res) => {
   try {
     const q = req.body;
     
@@ -166,7 +321,7 @@ app.post('/api/questions', async (req, res) => {
 });
 
 // 4. Update Question
-app.put('/api/questions/:id', async (req, res) => {
+app.put('/api/questions/:id', authenticateToken, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     await updateQuestion(id, req.body);
@@ -177,7 +332,7 @@ app.put('/api/questions/:id', async (req, res) => {
 });
 
 // 5. Delete Question
-app.delete('/api/questions/:id', async (req, res) => {
+app.delete('/api/questions/:id', authenticateToken, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     await deleteQuestion(id);
@@ -188,9 +343,9 @@ app.delete('/api/questions/:id', async (req, res) => {
 });
 
 // 6. Get Spaced Repetition Study Queue
-app.get('/api/today-reviews', async (req, res) => {
+app.get('/api/today-reviews', authenticateToken, async (req, res) => {
   try {
-    const data = await getTodayReviews();
+    const data = await getTodayReviews(req.user.userId);
     res.json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -198,7 +353,7 @@ app.get('/api/today-reviews', async (req, res) => {
 });
 
 // 7. Secure AI Grading API with DB History Logging (Combined Grading)
-app.post('/api/ai/grade', async (req, res) => {
+app.post('/api/ai/grade', authenticateToken, async (req, res) => {
   try {
     const { questionId, clozeScore, clozeAnswers, fullAnswerInput, skipAI } = req.body;
 
@@ -207,7 +362,7 @@ app.post('/api/ai/grade', async (req, res) => {
     }
 
     // Retrieve question data
-    const questionData = await getQuestion(parseInt(questionId));
+    const questionData = await getQuestion(parseInt(questionId), req.user.userId);
     if (!questionData) {
       return res.status(404).json({ success: false, message: 'Question not found' });
     }
@@ -279,7 +434,7 @@ ${JSON.stringify(questionData.full_score_points || [])}
     };
 
     // Save attempt and update database review states
-    await saveGrade(questionId, scores, inputs, gradingResult);
+    await saveGrade(req.user.userId, questionId, scores, inputs, gradingResult);
 
     res.json({
       success: true,
@@ -359,13 +514,13 @@ function runLocalSingleGrader(input, points, modeName) {
 }
 
 // 8. Leitner self-rating rating sync
-app.post('/api/cards/rate', async (req, res) => {
+app.post('/api/cards/rate', authenticateToken, async (req, res) => {
   try {
     const { questionId, rating } = req.body;
     if (!questionId || !rating) {
       return res.status(400).json({ success: false, message: 'questionId and rating are required' });
     }
-    await rateCard(parseInt(questionId), rating);
+    await rateCard(req.user.userId, parseInt(questionId), rating);
     res.json({ success: true, message: 'Card rating saved successfully' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -373,7 +528,7 @@ app.post('/api/cards/rate', async (req, res) => {
 });
 
 // 8.5. Save Cloze test results (Keep route for compatibility)
-app.post('/api/cloze/grade', async (req, res) => {
+app.post('/api/cloze/grade', authenticateToken, async (req, res) => {
   try {
     const { questionId, score, answers, result } = req.body;
     if (!questionId || score === undefined || !result) {
@@ -389,7 +544,7 @@ app.post('/api/cloze/grade', async (req, res) => {
       clozeAnswers: answers,
       fullAnswerInput: userAnswer
     };
-    await saveGrade(parseInt(questionId), scores, inputs, { result });
+    await saveGrade(req.user.userId, parseInt(questionId), scores, inputs, { result });
     res.json({ success: true, message: 'Cloze test result saved successfully' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -397,9 +552,9 @@ app.post('/api/cloze/grade', async (req, res) => {
 });
 
 // 9. Get Statistics & Weakness reports
-app.get('/api/statistics', async (req, res) => {
+app.get('/api/statistics', authenticateToken, async (req, res) => {
   try {
-    const stats = await getStatistics();
+    const stats = await getStatistics(req.user.userId);
     res.json({ success: true, data: stats });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -407,7 +562,7 @@ app.get('/api/statistics', async (req, res) => {
 });
 
 // 10. Admin: Import questions from Markdown / JSON
-app.post('/api/questions/import', async (req, res) => {
+app.post('/api/questions/import', authenticateToken, async (req, res) => {
   try {
     const { format, content } = req.body;
     let importCount = 0;
@@ -585,9 +740,9 @@ app.post('/api/questions/import', async (req, res) => {
 });
 
 // 11. Admin: Export questions to JSON
-app.get('/api/questions/export', async (req, res) => {
+app.get('/api/questions/export', authenticateToken, async (req, res) => {
   try {
-    const data = await getQuestions();
+    const data = await getQuestions(req.user.userId);
     res.json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -595,7 +750,7 @@ app.get('/api/questions/export', async (req, res) => {
 });
 
 // 12. Admin: Clear database (for reset/re-sync)
-app.post('/api/questions/clear', async (req, res) => {
+app.post('/api/questions/clear', authenticateToken, async (req, res) => {
   try {
     await clearAllTables();
     res.json({ success: true, message: 'All database tables cleared successfully.' });
@@ -605,7 +760,7 @@ app.post('/api/questions/clear', async (req, res) => {
 });
 
 // 13. Admin: AI Import helper
-app.post('/api/questions/import-ai', async (req, res) => {
+app.post('/api/questions/import-ai', authenticateToken, async (req, res) => {
   try {
     const { text, defaultSubject, defaultChapter } = req.body;
     if (!text || !text.trim()) {
