@@ -186,10 +186,11 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
 });
 
 // Helper: Call LLM API securely
-async function callLLM(systemPrompt, userPrompt) {
+async function callLLM(systemPrompt, userPrompt, customModel) {
   const apiKey = process.env.AI_API_KEY;
   const apiUrl = process.env.AI_API_URL || 'https://api.openai.com/v1';
-  const model = process.env.AI_API_MODEL || 'gpt-4o-mini';
+  const defaultModel = process.env.AI_API_MODEL || 'gpt-4o-mini';
+  const model = customModel || defaultModel;
   const temperature = parseFloat(process.env.AI_TEMPERATURE || '0.2');
 
   if (!apiKey) {
@@ -406,7 +407,7 @@ ${JSON.stringify(questionData.full_score_points || [])}
 【学生作答论述题】：
 "${fullAnswerInput || '（学生未作答）'}"`;
 
-        const aiText = await callLLM(systemPrompt, userPrompt);
+        const aiText = await callLLM(systemPrompt, userPrompt, process.env.AI_API_MODEL_GRADER);
         gradingResult = JSON.parse(aiText.trim());
       } catch (err) {
         console.error('LLM API call failed, falling back to local grader:', err);
