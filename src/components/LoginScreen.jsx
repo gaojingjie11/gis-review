@@ -336,8 +336,20 @@ export default function LoginScreen({ onLoginSuccess, theme, toggleTheme }) {
       {/* Main Glass Panel Card */}
       <div className="login-card">
         <div className="login-header">
-          <div className="login-logo">G</div>
-          <h2 className="login-title">GIS 考研背诵大师</h2>
+          <img 
+            src="/logo.png" 
+            alt="Echo Logo" 
+            style={{ 
+              width: '56px', 
+              height: '56px', 
+              objectFit: 'cover', 
+              borderRadius: '12px',
+              marginBottom: '1rem',
+              boxShadow: '0 8px 24px rgba(139, 92, 246, 0.3)',
+              border: '1px solid rgba(255, 255, 255, 0.1)'
+            }} 
+          />
+          <h2 className="login-title" style={{ fontFamily: 'var(--font-display)', fontWeight: '800' }}>Echo</h2>
           <p className="login-subtitle">用算法与 AI 精准背诵每一个考点</p>
         </div>
 

@@ -62,7 +62,7 @@ export default function HomeScreen({ reviewsData, startSession }) {
     <div className="home-screen-view animate-fade">
       {/* Immersive Welcome Area */}
       <header className="home-hero" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-        <h1 className="home-title">GIS Review</h1>
+        <h1 className="home-title">Echo</h1>
         <p className="home-subtitle">沉浸式 GIS 考研考点背诵系统</p>
         
         {/* Countdown Badge */}

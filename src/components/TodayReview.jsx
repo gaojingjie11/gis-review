@@ -868,15 +868,66 @@ export default function TodayReview({
               })()}
 
               {/* Action Controls */}
-              <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1.25rem', marginTop: '0.5rem', display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
-                <button
-                  type="button"
-                  className="text-btn primary-btn"
-                  onClick={handleNext}
-                  style={{ padding: '0.6rem 2.5rem' }}
-                >
-                  {currentIndex < activeQueue.length - 1 ? '下一题 ➔' : '完成本次学习 ➔'}
-                </button>
+              <div style={{ 
+                borderTop: '1px solid var(--border-color)', 
+                paddingTop: '1.25rem', 
+                marginTop: '0.5rem',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1rem'
+              }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', flex: 1, minWidth: '280px' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 'bold' }}>
+                      💡 自评修正（可点击覆盖 AI 评分以修改复习间隔）：
+                    </span>
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      {[
+                        { id: 'forgot', color: 'var(--danger)', label: '🔴 忘记', desc: '1天后' },
+                        { id: 'hard', color: 'var(--warning)', label: '🟡 困难', desc: '2天后' },
+                        { id: 'good', color: 'var(--info)', label: '🟢 良好', desc: '5天后' },
+                        { id: 'easy', color: 'var(--success)', label: '🔵 简单', desc: '12天后' }
+                      ].map(ratingOpt => (
+                        <button
+                          key={ratingOpt.id}
+                          type="button"
+                          onClick={() => handleLeitnerRating(ratingOpt.id)}
+                          className="text-btn"
+                          style={{
+                            padding: '0.4rem 0.8rem',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.3rem',
+                            borderWidth: '1px',
+                            borderColor: ratingOpt.color,
+                            background: 'rgba(255,255,255,0.02)',
+                            borderRadius: '6px',
+                            fontSize: '0.8rem',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          <span style={{ fontWeight: 'bold', color: ratingOpt.color }}>
+                            {ratingOpt.label}
+                          </span>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                            ({ratingOpt.desc})
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      className="text-btn primary-btn"
+                      onClick={handleNext}
+                      style={{ padding: '0.6rem 2.5rem' }}
+                    >
+                      {currentIndex < activeQueue.length - 1 ? '下一题 ➔' : '完成本次学习 ➔'}
+                    </button>
+                  </div>
+                </div>
               </div>
 
             </div>

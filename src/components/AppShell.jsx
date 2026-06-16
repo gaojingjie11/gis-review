@@ -43,15 +43,26 @@ export default function AppShell({
             <div className="header-session-title">{getSessionTitle()}</div>
           </div>
         ) : (
-          <div className="logo-section">
-            <div className="logo-icon">G</div>
+          <div className="logo-section" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            <img 
+              src="/logo.png" 
+              alt="Echo Logo" 
+              style={{ 
+                width: '32px', 
+                height: '32px', 
+                objectFit: 'cover', 
+                borderRadius: '8px',
+                boxShadow: '0 0 10px rgba(139, 92, 246, 0.3)',
+                border: '1px solid rgba(255, 255, 255, 0.1)'
+              }} 
+            />
             <div>
-              <span className="logo-title">GIS 考研背诵大师</span>
+              <span className="logo-title" style={{ fontWeight: '800' }}>Echo</span>
               <span className="backend-status-text">
                 {backendAvailable ? '🟢 PostgreSQL 数据源已连接' : '🔵 独立运行中'}
               </span>
             </div>
-            <span className="logo-badge">V3.0</span>
+            <span className="logo-badge">V4.0</span>
           </div>
         )}
 

@@ -1,6 +1,6 @@
 {
-  "name": "GIS 考研背诵大师",
-  "short_name": "GIS Review",
+  "name": "Echo",
+  "short_name": "Echo",
   "description": "沉浸式 GIS 考研考点背诵与智能评估系统",
   "start_url": "/",
   "display": "standalone",
