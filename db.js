@@ -68,15 +68,6 @@ export async function initDb() {
     console.warn('Database column check failed or table not created yet:', err.message);
   }
   
-  // 1. Create tags table
-  await query(`
-    CREATE TABLE IF NOT EXISTS tags (
-      id SERIAL PRIMARY KEY,
-      name VARCHAR(255) UNIQUE NOT NULL,
-      type VARCHAR(50) DEFAULT 'general'
-    );
-  `);
-
   // 2. Create questions table (Redesigned)
   await query(`
     CREATE TABLE IF NOT EXISTS questions (
@@ -92,15 +83,6 @@ export async function initDb() {
       importance INTEGER DEFAULT 3,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  // 3. Create question_tags mapping table
-  await query(`
-    CREATE TABLE IF NOT EXISTS question_tags (
-      question_id INTEGER REFERENCES questions(id) ON DELETE CASCADE,
-      tag_id INTEGER REFERENCES tags(id) ON DELETE CASCADE,
-      PRIMARY KEY (question_id, tag_id)
     );
   `);
 
@@ -278,21 +260,6 @@ async function seedDefaultData() {
 
     const questionId = qInsert.rows[0].id;
 
-    // Insert tag for chapter
-    const tagInsert = await query(`
-      INSERT INTO tags (name, type)
-      VALUES ($1, 'knowledge_point')
-      ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-      RETURNING id
-    `, [q.chapter]);
-    const tagId = tagInsert.rows[0].id;
-
-    await query(`
-      INSERT INTO question_tags (question_id, tag_id)
-      VALUES ($1, $2)
-      ON CONFLICT DO NOTHING
-    `, [questionId, tagId]);
-
     // Initialize review state for default admin user
     await query(`
       INSERT INTO review_states (user_id, question_id, mastery_level, review_count, error_count, next_review_time)
@@ -404,22 +371,6 @@ export async function createQuestion(q) {
   ]);
 
   const questionId = qInsert.rows[0].id;
-
-  // Insert tag
-  const tagInsert = await query(`
-    INSERT INTO tags (name, type)
-    VALUES ($1, 'knowledge_point')
-    ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-    RETURNING id
-  `, [chapter || '未分类']);
-  const tagId = tagInsert.rows[0].id;
-
-  await query(`
-    INSERT INTO question_tags (question_id, tag_id)
-    VALUES ($1, $2)
-    ON CONFLICT DO NOTHING
-  `, [questionId, tagId]);
-
   return questionId;
 }
 
@@ -453,22 +404,6 @@ export async function updateQuestion(id, q) {
     derivedType,
     id
   ]);
-
-  // Sync tags
-  await query('DELETE FROM question_tags WHERE question_id = $1', [id]);
-  const tagInsert = await query(`
-    INSERT INTO tags (name, type)
-    VALUES ($1, 'knowledge_point')
-    ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-    RETURNING id
-  `, [chapter || '未分类']);
-  const tagId = tagInsert.rows[0].id;
-
-  await query(`
-    INSERT INTO question_tags (question_id, tag_id)
-    VALUES ($1, $2)
-    ON CONFLICT DO NOTHING
-  `, [id, tagId]);
 }
 
 // Delete Question
