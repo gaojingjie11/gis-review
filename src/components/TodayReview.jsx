@@ -1106,8 +1106,32 @@ export default function TodayReview({ onNavigate, customQueue, customQueueName, 
                     </div>
 
                     <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>📋 参考最完整论述答案</span>
-                      <div style={{ padding: '0.75rem', background: 'rgba(0,0,0,0.15)', borderRadius: '6px', fontSize: '0.85rem', whiteSpace: 'pre-line', marginTop: '0.25rem', lineHeight: '1.6' }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.25rem' }}>✍️ 您的当时作答</span>
+                      <div style={{ 
+                        padding: '0.75rem 1rem', 
+                        background: 'rgba(255, 255, 255, 0.02)', 
+                        border: '1px dashed rgba(255, 255, 255, 0.1)', 
+                        borderRadius: '6px', 
+                        fontSize: '0.85rem', 
+                        whiteSpace: 'pre-line', 
+                        lineHeight: '1.6',
+                        color: 'var(--text-secondary)'
+                      }}>
+                        {fullAnswerInput ? fullAnswerInput.trim() : '（学生未作答）'}
+                      </div>
+                    </div>
+
+                    <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.25rem' }}>📋 参考最完整论述答案</span>
+                      <div style={{ 
+                        padding: '0.75rem 1rem', 
+                        background: 'rgba(0, 210, 255, 0.05)', 
+                        border: '1px solid rgba(0, 210, 255, 0.1)',
+                        borderRadius: '6px', 
+                        fontSize: '0.85rem', 
+                        whiteSpace: 'pre-line', 
+                        lineHeight: '1.6' 
+                      }}>
                         {currentQ.full_answer}
                       </div>
                     </div>
