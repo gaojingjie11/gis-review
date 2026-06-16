@@ -8,10 +8,10 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'icons.svg', 'pwa-192x192.png', 'pwa-512x512.png'],
+      includeAssets: ['logo.png', 'icons.svg', 'pwa-192x192.png', 'pwa-512x512.png'],
       manifest: {
-        name: 'GIS 考研背诵大师',
-        short_name: 'GIS Review',
+        name: 'Echo',
+        short_name: 'Echo',
         description: '沉浸式 GIS 考研考点背诵与智能评估系统',
         theme_color: '#FFF5F6',
         background_color: '#FFF5F6',

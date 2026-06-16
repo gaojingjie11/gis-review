@@ -419,7 +419,150 @@ export default function TodayReview({
     });
   };
 
-  // Today's setup bypassed to HomeScreen direct selection
+  // Render "今日学习包定制" custom view
+  if (activeQueue.length === 0 && currentPracticeMode === 'learn') {
+    const chapters = [...new Set(unlearnedList.map(q => q.chapter).filter(Boolean))];
+    
+    return (
+      <div className="study-pack-setup animate-fade" style={{ maxWidth: '800px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+        <div className="glass-panel" style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.6rem', fontWeight: '800' }}>🎯 今日学习包定制</h2>
+          <p style={{ color: 'var(--text-secondary)', lineHeight: '1.5', fontSize: '0.9rem' }}>
+            系统推荐您记忆当天导入和最近上传的内容。自定义选择后，系统将为您生成统一的记忆卡片包。
+          </p>
+        </div>
+
+        {/* Source selectors */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem' }}>
+          {[
+            { id: 'today', label: '📅 今日上传' },
+            { id: 'recent', label: '🆕 最近新传' },
+            { id: 'chapter', label: '📁 按章筛选' },
+            { id: 'all', label: '📚 全部未学' }
+          ].map(opt => (
+            <button
+              key={opt.id}
+              onClick={() => {
+                setPackSource(opt.id);
+                if (opt.id !== 'chapter') setSelectedChapter('');
+              }}
+              className="text-btn"
+              style={{
+                padding: '0.75rem 0.5rem',
+                fontSize: '0.85rem',
+                fontWeight: '700',
+                background: packSource === opt.id ? 'var(--primary-muted)' : 'rgba(0, 0, 0, 0.2)',
+                borderColor: packSource === opt.id ? 'var(--primary)' : 'var(--border-color)',
+                color: packSource === opt.id ? 'var(--primary)' : 'var(--text-primary)'
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Chapter filter selector if active */}
+        {packSource === 'chapter' && (
+          <div className="glass-panel" style={{ padding: '1rem' }}>
+            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.4rem' }}>选择目标章节</label>
+            <select
+              className="form-input-text"
+              value={selectedChapter}
+              onChange={(e) => setSelectedChapter(e.target.value)}
+              style={{ padding: '0.5rem', fontSize: '0.9rem' }}
+            >
+              <option value="">-- 请选择章节 --</option>
+              {chapters.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        )}
+
+        {/* Question checklist table */}
+        <div className="glass-panel" style={{ padding: '1rem', overflow: 'hidden' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--border-color)', marginBottom: '0.5rem' }}>
+            <button 
+              type="button" 
+              onClick={handleToggleSelectAll} 
+              style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+            >
+              {selectedIds.size === filteredPackQs.length ? <CheckSquare size={16} /> : <Square size={16} />}
+              全选 / 反选
+            </button>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              匹配未学考点：{filteredPackQs.length} 个
+            </span>
+          </div>
+
+          <div style={{ maxHeight: '380px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem', paddingRight: '4px' }}>
+            {filteredPackQs.length > 0 ? (
+              filteredPackQs.map((q, idx) => {
+                const isChecked = selectedIds.has(q.id);
+                return (
+                  <div
+                    key={q.id}
+                    onClick={() => handleToggleSelect(q.id)}
+                    className="glass-panel"
+                    style={{
+                      padding: '0.75rem 1rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '1rem',
+                      cursor: 'pointer',
+                      background: isChecked ? 'rgba(0, 210, 255, 0.05)' : 'rgba(255,255,255,0.01)',
+                      borderColor: isChecked ? 'rgba(0, 210, 255, 0.3)' : 'var(--border-color)',
+                      transition: 'all 0.15s'
+                    }}
+                  >
+                    <div>
+                      {isChecked ? <CheckSquare size={18} className="text-primary" /> : <Square size={18} style={{ color: 'var(--text-muted)' }} />}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <h4 style={{ fontSize: '0.9rem', fontWeight: '700', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {q.question}
+                      </h4>
+                      <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                        {q.chapter}
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.4rem', fontSize: '0.7rem' }}>
+                      <span style={{ padding: '0.1rem 0.4rem', borderRadius: '4px', background: 'rgba(255,255,255,0.05)' }}>
+                        ★ {q.importance}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
+                🫙 暂无匹配该条件的新考点。
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Sticky action bar */}
+        <div className="glass-panel" style={{ padding: '1rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(10, 15, 30, 0.9)' }}>
+          <div>
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+              今日学习限额: <strong>{dailyNewGoal}</strong> | 已选中 <strong>{selectedIds.size}</strong> 个考点
+            </span>
+          </div>
+          <button
+            type="button"
+            className="text-btn primary-btn"
+            disabled={selectedIds.size === 0}
+            onClick={() => {
+              const selectedQs = filteredPackQs.filter(q => selectedIds.has(q.id));
+              startQueue('今日学习包', selectedQs, 'learn');
+            }}
+            style={{ padding: '0.6rem 2rem' }}
+          >
+            🚀 开始今日学习包 ({selectedIds.size})
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // Fallback to select queue screen if activeQueue is empty for review/other
   if (activeQueue.length === 0) {

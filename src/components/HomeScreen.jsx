@@ -90,8 +90,8 @@ export default function HomeScreen({ reviewsData, startSession }) {
         <div 
           className="home-card glass-panel learn-card"
           onClick={() => {
-            if (cappedLearnQueue.length > 0) {
-              handleSelectOption('start-queue', cappedLearnQueue, '今日新学', 'learn');
+            if (totalUnlearned > 0) {
+              handleSelectOption('start-queue', [], '今日学习包', 'learn');
             } else {
               window.customAlert('您已学完当前所有的未学概念！可以在“题库管理”中导入新资料。');
             }
